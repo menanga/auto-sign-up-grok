@@ -1,0 +1,20 @@
+services:
+  grok-signup:
+    build: .
+    container_name: grok-signup
+    env_file: .env
+    environment:
+      # 0 / negative = infinite loop like bulk-cf
+      - MAX_ACCOUNTS=0
+      - AUTO_ADD=true
+      - PAUSE_SECONDS=10
+      - DELAY_SECONDS=5
+      - BATCH_SIZE=1
+      - MAX_ACCOUNT_RETRIES=3
+    volumes:
+      - ./sso.txt:/app/sso.txt
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
