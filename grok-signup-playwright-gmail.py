@@ -387,21 +387,21 @@ def add_to_router_single(acc):
             try:
                 ctx.clear_cookies()
                 cookies = acc.get('sso_cookies', [])
-            if cookies:
-                safe = []
-                for c in cookies:
-                    cc = dict(c)
-                    if not cc.get('domain'):
-                        continue
-                    ss = cc.get('sameSite','Lax')
-                    if ss not in ('Strict','Lax','None'):
-                        ss = 'Lax'
-                    cc['sameSite'] = ss
-                    safe.append(cc)
-                ctx.add_cookies(safe)
+                if cookies:
+                    safe = []
+                    for c in cookies:
+                        cc = dict(c)
+                        if not cc.get('domain'):
+                            continue
+                        ss = cc.get('sameSite','Lax')
+                        if ss not in ('Strict','Lax','None'):
+                            ss = 'Lax'
+                        cc['sameSite'] = ss
+                        safe.append(cc)
+                    ctx.add_cookies(safe)
 
-            d = r9.device_code()
-            verify_url = d['verification_uri_complete']
+                d = r9.device_code()
+                verify_url = d['verification_uri_complete']
 
             page = ctx.new_page()
             page.goto(verify_url, wait_until='domcontentloaded', timeout=45000)
