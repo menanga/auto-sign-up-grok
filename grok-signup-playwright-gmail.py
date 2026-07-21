@@ -58,37 +58,26 @@ class ProxyPool:
                 clean_proxy = match.group(1)
                 self._proxies[clean_proxy] = 0
 
-        log_ok(f"proxy pool: {len(self._proxies)} loaded")
+        # Silent init - logging done by caller
 
     def get_random_proxy(self):
         """Get random working proxy, or None if all blacklisted."""
         available = [p for p, fails in self._proxies.items() if fails < 3]
 
         if not available:
-            log_no("all proxies blacklisted (3+ failures) - fallback to direct")
             return None
 
-        proxy = random.choice(available)
-        log_wait(f"selected proxy: {proxy} (failures: {self._proxies[proxy]}/3)")
-        return proxy
+        return random.choice(available)
 
     def report_failure(self, proxy):
         """Increment failure count. Blacklist at 3."""
         if not proxy or proxy not in self._proxies:
             return
-
         self._proxies[proxy] += 1
-        log_no(f"proxy failed: {proxy} ({self._proxies[proxy]}/3 failures)")
-
-        if self._proxies[proxy] >= 3:
-            log_no(f"proxy BLACKLISTED: {proxy}")
 
     def report_success(self, proxy):
         """Report success (keeps failure history)."""
-        if not proxy or proxy not in self._proxies:
-            return
-
-        log_ok(f"proxy success: {proxy} (failures: {self._proxies[proxy]})")
+        pass  # No-op, keep failure count
 
     def get_stats(self):
         """Get pool stats."""
@@ -349,8 +338,9 @@ def add_to_router_single(acc):
         proxy_server = PROXY_POOL.get_random_proxy()
         if proxy_server:
             proxy_config = {'server': f'http://{proxy_server}'}
+            log_ok(f"using proxy: {proxy_server} (failures: {PROXY_POOL._proxies.get(proxy_server, 0)}/3)")
         else:
-            log_wait("no available proxy - using direct connection")
+            log_no("all proxies blacklisted - using direct connection")
 
     # Generate random user agent
     user_agents = [
@@ -433,6 +423,7 @@ def add_to_router_single(acc):
                         # Report proxy success
                         if PROXY_POOL and proxy_server:
                             PROXY_POOL.report_success(proxy_server)
+                            log_ok(f"proxy success: {proxy_server}")
                         return True
                     if not res.get('pending'):
                         log_no(f"{email} poll error")
@@ -440,6 +431,10 @@ def add_to_router_single(acc):
                         # Report proxy failure
                         if PROXY_POOL and proxy_server:
                             PROXY_POOL.report_failure(proxy_server)
+                            failures = PROXY_POOL._proxies.get(proxy_server, 0)
+                            log_no(f"proxy failed: {proxy_server} ({failures}/3)")
+                            if failures >= 3:
+                                log_no(f"proxy BLACKLISTED: {proxy_server}")
                         return False
                     time.sleep(5)
 
@@ -496,8 +491,9 @@ def signup_one(email_code_pair=None):
         proxy_server = PROXY_POOL.get_random_proxy()
         if proxy_server:
             proxy_config = {'server': f'http://{proxy_server}'}
+            log_ok(f"using proxy: {proxy_server} (failures: {PROXY_POOL._proxies.get(proxy_server, 0)}/3)")
         else:
-            log_wait("no available proxy - using direct connection")
+            log_no("all proxies blacklisted - using direct connection")
 
     # Generate random user agent
     user_agents = [
@@ -831,6 +827,7 @@ def signup_one(email_code_pair=None):
         # Report proxy success
         if PROXY_POOL and proxy_server:
             PROXY_POOL.report_success(proxy_server)
+            log_ok(f"proxy success: {proxy_server}")
 
         return data
 
@@ -838,6 +835,10 @@ def signup_one(email_code_pair=None):
         # Report proxy failure
         if PROXY_POOL and proxy_server:
             PROXY_POOL.report_failure(proxy_server)
+            failures = PROXY_POOL._proxies.get(proxy_server, 0)
+            log_no(f"proxy failed: {proxy_server} ({failures}/3)")
+            if failures >= 3:
+                log_no(f"proxy BLACKLISTED: {proxy_server}")
         raise
 
 # ── Infinite runner ───────────────────────────────────────────
