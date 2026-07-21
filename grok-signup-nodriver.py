@@ -99,11 +99,18 @@ class GmailIMAP:
 
     @staticmethod
     def _extract_code(text):
-        for pat in [r'code:\s*([A-Z0-9]{3}-[A-Z0-9]{3})', r'code:\s*([A-Z0-9]{6})', r'([A-Z0-9]{6})']:
+        # Try specific patterns first, then broad
+        patterns = [
+            r'code[:\s]+([A-Z0-9]{3}-[A-Z0-9]{3})',  # "code: ZS8-UTP" or "code U5R-4UC"
+            r'code[:\s]+([A-Z0-9]{6})',              # "code: ZS8UTP" or "code ZS8UTP"
+            r'\b([A-Z0-9]{3}-[A-Z0-9]{3})\b',        # word boundary "U5R-4UC"
+            r'\b([A-Z0-9]{6})\b',                    # word boundary "U5R4UC"
+        ]
+        for pat in patterns:
             m = re.search(pat, text, re.I)
             if m:
                 code = m.group(1).replace('-', '')
-                if len(code) == 6:
+                if len(code) == 6 and code.isalnum() and code.isupper():
                     return code
         return None
 
@@ -125,20 +132,45 @@ class GmailIMAP:
         try:
             self.mail.noop()
             _, search_data = self.mail.search(None, f'TO "{self.addr}"')
-            for mid in search_data[0].split():
+            msg_ids = search_data[0].split()
+
+            # Debug: log email count
+            if msg_ids:
+                log_wait(f"found {len(msg_ids)} emails for {self.addr}")
+
+            for mid in msg_ids:
                 if mid in self._seen_ids:
                     continue
                 _, fetched = self.mail.fetch(mid, '(RFC822)')
                 raw = fetched[0][1]
                 msg = message_from_bytes(raw)
-                text = self._body_text(msg)
-                code = self._extract_code(text) or self._extract_code(msg.get('Subject', ''))
+
+                # Debug: log email details (FULL subject, not truncated)
+                subj = msg.get('Subject', '')
+                from_addr = msg.get('From', '')
+                log_wait(f"Email: From={from_addr[:50]}, Subject={subj}")
+
+                # Try extract from SUBJECT FIRST (more reliable than HTML body)
+                code = self._extract_code(subj)
                 if code:
+                    log_ok(f"✓ Extracted OTP: {code} from SUBJECT")
                     self._seen_ids.add(mid)
                     return code
+
+                # Fallback: try body
+                text = self._body_text(msg)
+                if text:
+                    log_wait(f"Body snippet: {text[:100]}")
+                    code = self._extract_code(text)
+                    if code:
+                        log_ok(f"✓ Extracted OTP: {code} from BODY")
+                        self._seen_ids.add(mid)
+                        return code
+
+                log_wait(f"No OTP match in this email")
                 self._seen_ids.add(mid)
-        except Exception:
-            pass
+        except Exception as e:
+            log_no(f"Gmail peek error: {e}")
         return None
 
     def logout(self):
@@ -352,8 +384,17 @@ async def signup_one(email_code_pair=None):
         await code_input.click()
         await code_input.send_keys(code)
         await asyncio.sleep(0.3)
+        log_wait("submitting OTP...")
         await page.evaluate("document.querySelector('input[name=code]').dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', bubbles:true}))")
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
+
+        # Debug: check for error messages
+        try:
+            error_text = await page.evaluate("document.body.innerText")
+            if 'invalid' in error_text.lower() or 'incorrect' in error_text.lower():
+                log_no(f"OTP error detected: {error_text[:200]}")
+        except:
+            pass
 
         await page.select('input[name=givenName]', timeout=20000)
         log_ok("OTP verified")
