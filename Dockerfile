@@ -45,5 +45,11 @@ RUN python -m playwright install chrome \
 # Copy application files
 COPY . .
 
-# Default: run with Xvfb, auto-add to 9Router
-CMD ["xvfb-run", "-a", "python", "grok-signup-playwright-gmail.py", "--auto-add"]
+# Make entrypoint executable
+RUN chmod +x entrypoint.sh
+
+# Use entrypoint that auto-starts Xvfb
+ENTRYPOINT ["./entrypoint.sh"]
+
+# Default arguments (can be overridden in Dokploy)
+CMD ["--auto-add"]
