@@ -5,6 +5,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONIOENCODING=utf-8
 
+WORKDIR /app
+
+# Install Python dependencies first (includes playwright package)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
 # Install system dependencies for Playwright Chrome
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
@@ -31,15 +37,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
-
-# Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Install Playwright Chrome (bundled, no system Chrome needed)
-RUN playwright install chrome \
-    && playwright install-deps chrome
+# Install Playwright Chrome (after pip install playwright)
+RUN python -m playwright install chrome \
+    && python -m playwright install-deps chrome
 
 # Copy application files
 COPY . .
