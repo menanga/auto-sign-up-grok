@@ -24,6 +24,9 @@ from pathlib import Path
 import nodriver as uc
 import curl_cffi.requests as creq
 
+# Import Turnstile solver
+from turnstile_solver import solve_turnstile
+
 # ── Config ────────────────────────────────────────────────────
 _env = {}
 _envfile = Path(__file__).parent / '.env'
@@ -463,82 +466,25 @@ async def signup_one(email_code_pair=None):
         log_ok("form filled")
 
         # Check if Turnstile present and wait for nodriver to solve (with retry)
+        turnstile_solved = False
         for turnstile_attempt in range(1, 3):  # Max 2 attempts
             log_wait(f"checking for Turnstile... (attempt {turnstile_attempt}/2)")
             ts_present = await is_turnstile_present(page)
 
             if ts_present:
-                log_ok("Turnstile detected, triggering solve...")
+                log_ok("Turnstile detected, calling solver...")
 
-                # Scroll Turnstile into view and click to activate
-                try:
-                    await page.evaluate("""
-                        (function() {
-                            const iframe = document.querySelector('iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]');
-                            if (iframe) {
-                                iframe.scrollIntoView({behavior: 'smooth', block: 'center'});
-                            }
-                        })();
-                    """)
-                    await asyncio.sleep(2)
+                # Call nodriver's Turnstile solver
+                token = await solve_turnstile(page, timeout=60)
 
-                    # Click on Turnstile iframe to trigger challenge
-                    log_wait("clicking Turnstile to activate...")
-                    await page.evaluate("""
-                        (function() {
-                            const iframe = document.querySelector('iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]');
-                            if (iframe) {
-                                iframe.click();
-                            }
-                        })();
-                    """)
-                    await asyncio.sleep(3)
-                except Exception as e:
-                    log_wait(f"Turnstile trigger error: {e}")
-
-                # Give nodriver up to 60s to solve
-                log_wait("waiting for nodriver to solve Turnstile...")
-                turnstile_solved = False
-                for i in range(60):
-                    token = await page.evaluate("document.querySelector('input[name=cf-turnstile-response]')?.value || ''")
-                    if token and len(token) > 20:
-                        log_ok(f"Turnstile solved (token: {token[:20]}...)")
-                        turnstile_solved = True
-                        break
-
-                    # Re-click at 15s, 30s, 45s to re-trigger if stuck
-                    if i in [15, 30, 45]:
-                        log_wait(f"re-clicking Turnstile to re-trigger... ({i}s)")
-                        try:
-                            # Find Turnstile iframe and click using nodriver's click method
-                            iframe_elem = await page.query_selector('iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]')
-                            if iframe_elem:
-                                # Scroll into view first
-                                await page.evaluate("""
-                                    (function() {
-                                        const iframe = document.querySelector('iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]');
-                                        if (iframe) {
-                                            iframe.scrollIntoView({behavior: 'smooth', block: 'center'});
-                                        }
-                                    })();
-                                """)
-                                await asyncio.sleep(0.5)
-
-                                # Click the iframe element using nodriver
-                                await iframe_elem.click()
-                                log_ok(f"Turnstile re-clicked at {i}s")
-                        except Exception as e:
-                            log_wait(f"re-click failed: {e}")
-                    elif i % 10 == 0 and i > 0:
-                        log_wait(f"still waiting for Turnstile solve... ({i}s)")
-
-                    await asyncio.sleep(1)
-
-                if turnstile_solved:
-                    break  # Success, exit retry loop
+                if token and len(token) > 20:
+                    log_ok(f"Turnstile solved (token: {token[:20]}...)")
+                    turnstile_solved = True
+                    break
+                else:
+                    log_no(f"Turnstile solve failed (attempt {turnstile_attempt}/2)")
 
                 # Turnstile timeout - retry from email if first attempt
-                log_no(f"Turnstile timeout after 60s (attempt {turnstile_attempt}/2)")
                 if turnstile_attempt < 2:
                     retry_delay = random.randint(10, 30)
                     log_wait(f"waiting {retry_delay}s before retry...")
@@ -570,6 +516,17 @@ async def signup_one(email_code_pair=None):
                         # Wait for OTP input
                         await page.select('input[name=code]', timeout=20)
                         log_ok("email submitted")
+
+                        # Reconnect IMAP (connection timed out during retry wait)
+                        try:
+                            log_wait("reconnecting IMAP after retry wait...")
+                            # Force new connection (old one timed out, don't wait for close/logout)
+                            mail.mail = imaplib.IMAP4_SSL('imap.gmail.com')
+                            mail.mail.login(GMAIL_USER, GMAIL_APP_PASSWORD)
+                            mail.mail.select('inbox')
+                            log_ok("IMAP reconnected")
+                        except Exception as reconnect_err:
+                            log_no(f"IMAP reconnect failed: {reconnect_err}")
 
                         # Get new OTP (clear seen IDs first)
                         mail._seen_ids.clear()
