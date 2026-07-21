@@ -43,10 +43,11 @@ ROUTER9_PASS = _env_or('ROUTER9_PASS', 'change-me')
 class ProxyPool:
     """Proxy pool with failure tracking and blacklisting.
 
-    Proxies failing 3 times are blacklisted. When all proxies dead, returns None (fallback to direct).
+    Proxies failing PROXY_MAX_FAILURES times are blacklisted. When all proxies dead, returns None (fallback to direct).
     """
-    def __init__(self, proxies: list):
+    def __init__(self, proxies: list, max_failures: int = 3):
         self._proxies = {}  # proxy_url -> failure_count
+        self._max_failures = max_failures
 
         for proxy in proxies:
             proxy = proxy.strip()
@@ -62,7 +63,7 @@ class ProxyPool:
 
     def get_random_proxy(self):
         """Get random working proxy, or None if all blacklisted."""
-        available = [p for p, fails in self._proxies.items() if fails < 3]
+        available = [p for p, fails in self._proxies.items() if fails < self._max_failures]
 
         if not available:
             return None
@@ -70,7 +71,7 @@ class ProxyPool:
         return random.choice(available)
 
     def report_failure(self, proxy):
-        """Increment failure count. Blacklist at 3."""
+        """Increment failure count. Blacklist at max_failures."""
         if not proxy or proxy not in self._proxies:
             return
         self._proxies[proxy] += 1
@@ -82,13 +83,14 @@ class ProxyPool:
     def get_stats(self):
         """Get pool stats."""
         total = len(self._proxies)
-        blacklisted = sum(1 for fails in self._proxies.values() if fails >= 3)
+        blacklisted = sum(1 for fails in self._proxies.values() if fails >= self._max_failures)
         available = total - blacklisted
 
         return {
             'total': total,
             'available': available,
             'blacklisted': blacklisted,
+            'max_failures': self._max_failures,
         }
 
 # Load proxy pool
@@ -97,7 +99,7 @@ PROXY_POOL = None
 if PROXY_LIST_RAW:
     proxy_lines = [line.strip() for line in PROXY_LIST_RAW.split(',') if line.strip()]
     if proxy_lines:
-        PROXY_POOL = ProxyPool(proxy_lines)
+        PROXY_POOL = ProxyPool(proxy_lines, max_failures=PROXY_MAX_FAILURES)
     else:
         log_no("PROXIES env empty - running without proxy")
 
@@ -132,6 +134,7 @@ BATCH_SIZE = max(1, int(_env_or('BATCH_SIZE', '1')))
 PAUSE_SECONDS = int(_env_or('PAUSE_SECONDS', '10'))
 DELAY_SECONDS = int(_env_or('DELAY_SECONDS', '5'))
 MAX_ACCOUNT_RETRIES = max(1, int(_env_or('MAX_ACCOUNT_RETRIES', '3')))
+PROXY_MAX_FAILURES = max(1, int(_env_or('PROXY_MAX_FAILURES', '3')))  # Proxy blacklist threshold
 AUTO_ADD = os.environ.get('AUTO_ADD', 'false').lower() in ('1','true','yes')
 
 _used_addrs = set()
@@ -338,7 +341,7 @@ def add_to_router_single(acc):
         proxy_server = PROXY_POOL.get_random_proxy()
         if proxy_server:
             proxy_config = {'server': f'http://{proxy_server}'}
-            log_ok(f"using proxy: {proxy_server} (failures: {PROXY_POOL._proxies.get(proxy_server, 0)}/3)")
+            log_ok(f"using proxy: {proxy_server} (failures: {PROXY_POOL._proxies.get(proxy_server, 0)}/{PROXY_POOL._max_failures})")
         else:
             log_no("all proxies blacklisted - using direct connection")
 
@@ -432,8 +435,8 @@ def add_to_router_single(acc):
                         if PROXY_POOL and proxy_server:
                             PROXY_POOL.report_failure(proxy_server)
                             failures = PROXY_POOL._proxies.get(proxy_server, 0)
-                            log_no(f"proxy failed: {proxy_server} ({failures}/3)")
-                            if failures >= 3:
+                            log_no(f"proxy failed: {proxy_server} ({failures}/{PROXY_POOL._max_failures})")
+                            if failures >= PROXY_POOL._max_failures:
                                 log_no(f"proxy BLACKLISTED: {proxy_server}")
                         return False
                     time.sleep(5)
@@ -491,7 +494,7 @@ def signup_one(email_code_pair=None):
         proxy_server = PROXY_POOL.get_random_proxy()
         if proxy_server:
             proxy_config = {'server': f'http://{proxy_server}'}
-            log_ok(f"using proxy: {proxy_server} (failures: {PROXY_POOL._proxies.get(proxy_server, 0)}/3)")
+            log_ok(f"using proxy: {proxy_server} (failures: {PROXY_POOL._proxies.get(proxy_server, 0)}/{PROXY_POOL._max_failures})")
         else:
             log_no("all proxies blacklisted - using direct connection")
 
@@ -861,7 +864,7 @@ def run_accounts():
     # Proxy pool stats
     if PROXY_POOL:
         stats = PROXY_POOL.get_stats()
-        print(f"{CYN}║{RST} Proxy Pool: {stats['total']} total, {stats['available']} available")
+        print(f"{CYN}║{RST} Proxy Pool: {stats['total']} total, {stats['available']} available (blacklist at {stats['max_failures']} failures)")
     else:
         print(f"{YEL}║{RST} Proxy Pool: disabled (PROXIES env not set)")
 
