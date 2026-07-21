@@ -5,8 +5,4 @@ __pycache__/
 .env
 test-*.py
 *.log
-/.idea/inspectionProfiles/profiles_settings.xml
-/.idea/auto-sign-up-grok.iml
-/.idea/misc.xml
-/.idea/modules.xml
-/.idea/vcs.xml
+/.idea
