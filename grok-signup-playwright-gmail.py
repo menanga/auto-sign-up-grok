@@ -52,6 +52,38 @@ if PROXY_LIST_RAW:
         if match:
             PROXY_LIST.append(match.group(1))
 
+def test_proxy(proxy):
+    """Test if proxy is working."""
+    try:
+        s = creq.Session()
+        r = s.get('https://api.ipify.org?format=json',
+                 proxies={'http': f'http://{proxy}', 'https': f'http://{proxy}'},
+                 timeout=5)
+        if r.status_code == 200:
+            ip = r.json().get('ip', 'unknown')
+            log_ok(f"proxy {proxy} → IP {ip}")
+            return True
+    except Exception as e:
+        log_no(f"proxy {proxy} failed: {e}")
+    return False
+
+def pick_working_proxy(max_attempts=5):
+    """Pick a working proxy from the list."""
+    if not PROXY_LIST:
+        return None
+
+    tested = set()
+    for _ in range(max_attempts):
+        proxy = random.choice(PROXY_LIST)
+        if proxy in tested:
+            continue
+        tested.add(proxy)
+        if test_proxy(proxy):
+            return proxy
+
+    log_no(f"no working proxy found after {max_attempts} attempts")
+    return None
+
 # Auto-detect Chrome binary
 def _detect_chrome():
     candidates = [
@@ -282,12 +314,26 @@ def add_to_router_single(acc):
         log_no(f"9router API error: {e}")
         return False
 
-    # Pick random proxy
+    # Pick working proxy with validation
     proxy_config = None
+    proxy_server = None
     if PROXY_LIST:
-        proxy_server = random.choice(PROXY_LIST)
-        proxy_config = {'server': f'http://{proxy_server}'}
-        log_ok(f"using proxy: {proxy_server}")
+        log_wait("testing proxy connection...")
+        proxy_server = pick_working_proxy(max_attempts=5)
+        if proxy_server:
+            proxy_config = {'server': f'http://{proxy_server}'}
+            log_ok(f"using proxy: {proxy_server}")
+        else:
+            log_no("all proxies failed, proceeding without proxy")
+
+    # Generate random user agent
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    ]
+    user_agent = random.choice(user_agents)
 
     with sync_playwright() as p:
         launch_kwargs = {
@@ -295,11 +341,21 @@ def add_to_router_single(acc):
             'headless': False,
             'no_viewport': True,
             'executable_path': CHROME_BIN,
-            'args': ['--no-sandbox','--disable-dev-shm-usage'],
+            'user_agent': user_agent,
+            'args': [
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-blink-features=AutomationControlled',
+                '--use-fake-ui-for-media-stream',
+                '--use-fake-device-for-media-stream',
+                f'--user-agent={user_agent}',
+            ],
+            'ignore_default_args': ['--enable-automation'],
         }
         if proxy_config:
             launch_kwargs['proxy'] = proxy_config
 
+        log_wait(f"launching browser (proxy: {proxy_server or 'none'})")
         ctx = p.chromium.launch_persistent_context(**launch_kwargs)
         try:
             ctx.clear_cookies()
@@ -381,24 +437,45 @@ def signup_one(email_code_pair=None):
 
     ext_path = unlock_turnstile()
 
-    # Pick random proxy
+    # Pick working proxy with validation
     proxy_config = None
+    proxy_server = None
     if PROXY_LIST:
-        proxy_server = random.choice(PROXY_LIST)
-        proxy_config = {'server': f'http://{proxy_server}'}
-        log_ok(f"using proxy: {proxy_server}")
+        log_wait("testing proxy connection...")
+        proxy_server = pick_working_proxy(max_attempts=5)
+        if proxy_server:
+            proxy_config = {'server': f'http://{proxy_server}'}
+            log_ok(f"using proxy: {proxy_server}")
+        else:
+            log_no("all proxies failed, proceeding without proxy")
+
+    # Generate random user agent
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    ]
+    user_agent = random.choice(user_agents)
+    log_ok(f"user agent: {user_agent[:50]}...")
 
     with sync_playwright() as p:
         launch_args = {
             'user_data_dir': f'/tmp/grok-pw-{int(time.time()*1000)}-{random.randint(1000,9999)}',
             'headless': False,
             'no_viewport': True,
+            'user_agent': user_agent,
             'args': [
                 f'--disable-extensions-except={ext_path}',
                 f'--load-extension={ext_path}',
                 '--no-sandbox',
                 '--disable-dev-shm-usage',
                 '--disable-blink-features=AutomationControlled',
+                '--use-fake-ui-for-media-stream',
+                '--use-fake-device-for-media-stream',
+                '--disable-webgl',
+                '--disable-webgl2',
+                f'--user-agent={user_agent}',
             ],
             'ignore_default_args': ['--enable-automation'],
         }
@@ -406,6 +483,12 @@ def signup_one(email_code_pair=None):
             launch_args['executable_path'] = CHROME_BIN
         if proxy_config:
             launch_args['proxy'] = proxy_config
+
+        log_wait("launching browser...")
+        log_wait(f"  Chrome: {CHROME_BIN or 'bundled'}")
+        log_wait(f"  Extension: {ext_path}")
+        log_wait(f"  Proxy: {proxy_server or 'none'}")
+        log_wait(f"  User-Agent: {user_agent[:60]}...")
 
         ctx = p.chromium.launch_persistent_context(**launch_args)
 
@@ -483,20 +566,42 @@ def signup_one(email_code_pair=None):
         for ts_attempt in range(1, 4):
             # Wait for turnstile token
             log_wait(f"solving turnstile (attempt {ts_attempt}/3)...")
+
+            # Diagnostic: check if extension loaded
+            try:
+                ext_count = page.evaluate("chrome.runtime ? 1 : 0")
+                log_wait(f"  extension API available: {ext_count == 1}")
+            except:
+                log_no("  could not check extension status")
+
+            # Diagnostic: check turnstile iframe presence
+            try:
+                iframe_count = page.evaluate("document.querySelectorAll('iframe[src*=\"turnstile\"]').length")
+                log_wait(f"  turnstile iframes found: {iframe_count}")
+            except:
+                pass
+
             token = ''
             for i in range(10):
                 token = page.evaluate("document.querySelector('input[name=cf-turnstile-response]')?.value || ''")
                 if token:
-                    log_ok("turnstile solved"); break
+                    log_ok(f"turnstile solved (token: {token[:20]}...)")
+                    break
+                if i == 5:
+                    log_wait("  still waiting for turnstile token...")
                 time.sleep(1)
 
             if token:
                 turnstile_success = True
                 break
 
-            # Turnstile failed - click "Go back" and retry
+            # Turnstile failed - click "Go back" and retry with delay
             log_no(f"turnstile timeout (attempt {ts_attempt}/3)")
             if ts_attempt < 3:
+                # Random delay between retries to avoid rate limiting
+                retry_delay = random.randint(10, 30)
+                log_wait(f"waiting {retry_delay}s before retry...")
+                time.sleep(retry_delay)
                 try:
                     page.get_by_role('button', name=re.compile(r'Go back', re.I)).click(timeout=5000)
                     log_ok("clicked Go back")
@@ -686,8 +791,39 @@ def run_accounts():
     print(f"{CYN}{'='*74}{RST}")
     print(f"{CYN}║{RST} Mode: {'INFINITE' if max_accounts <= 0 else f'{max_accounts} accounts'}")
     print(f"{CYN}║{RST} Batch Size: {BATCH_SIZE}")
-    print(f"{CYN}║{RST} Chrome: {CHROME_BIN}")
+    print(f"{CYN}║{RST} Chrome: {CHROME_BIN or 'bundled'}")
     print(f"{CYN}║{RST} Auto-Import: {'YES' if auto_add else 'NO'}")
+    print(f"{CYN}║{RST} Proxies: {len(PROXY_LIST)} loaded")
+    print(f"{CYN}║{RST} Extension: {TS_DIR}")
+    print(f"{CYN}║{RST} Account Retries: {MAX_ACCOUNT_RETRIES}")
+    print(f"{CYN}║{RST} Delay Between Accounts: {DELAY_SECONDS}s")
+    print(f"{CYN}║{RST} Pause Between Batches: {PAUSE_SECONDS}s")
+
+    # Diagnostic: check extension files
+    if (TS_DIR / 'manifest.json').exists():
+        print(f"{GRN}║{RST} ✓ turnstilePatch extension found")
+    else:
+        print(f"{RED}║{RST} ✗ turnstilePatch extension MISSING")
+
+    # Diagnostic: test one proxy if available
+    if PROXY_LIST:
+        print(f"{CYN}║{RST} Testing random proxy...")
+        test_proxy = random.choice(PROXY_LIST)
+        try:
+            s = creq.Session()
+            r = s.get('https://api.ipify.org?format=json',
+                     proxies={'http': f'http://{test_proxy}', 'https': f'http://{test_proxy}'},
+                     timeout=5)
+            if r.status_code == 200:
+                ip = r.json().get('ip', 'unknown')
+                print(f"{GRN}║{RST} ✓ Proxy test OK: {test_proxy} → {ip}")
+            else:
+                print(f"{YEL}║{RST} ⚠ Proxy returned status {r.status_code}")
+        except Exception as e:
+            print(f"{RED}║{RST} ✗ Proxy test failed: {e}")
+    else:
+        print(f"{YEL}║{RST} ⚠ No proxies configured (PROXIES env var empty)")
+
     print(f"{CYN}{'='*74}{RST}\n")
 
     while max_accounts <= 0 or total < max_accounts:
