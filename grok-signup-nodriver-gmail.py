@@ -109,29 +109,6 @@ if PROXY_LIST_RAW:
     else:
         log_no("PROXIES env empty - running without proxy")
 
-# Auto-detect Chrome binary
-def _detect_chrome():
-    candidates = [
-        '/usr/bin/google-chrome',
-        '/usr/bin/google-chrome-stable',
-        '/usr/bin/chromium',
-        '/usr/bin/chromium-browser',
-        None,  # Let Playwright use bundled Chrome
-    ]
-    env_chrome = _env_or('CHROME_BIN', '')
-    if env_chrome:
-        return env_chrome
-
-    import shutil
-    for path in candidates:
-        if path is None:
-            return None
-        if shutil.which(path) or Path(path).exists():
-            return path
-    return None
-
-CHROME_BIN = _detect_chrome()
-TS_DIR = Path('turnstilePatch').resolve()
 SIGNUP = 'https://accounts.x.ai/sign-up?redirect=grok-com'
 OUT = Path('sso.txt')
 
@@ -170,32 +147,31 @@ def unique_addr():
             return addr
     raise RuntimeError('could not generate unique email')
 
-def unlock_turnstile():
-    """Return path to turnstilePatch directory."""
-    if not (TS_DIR / 'script.js').exists() or not (TS_DIR / 'manifest.json').exists():
-        raise RuntimeError(f"missing turnstilePatch/script.js or manifest.json in {TS_DIR}")
-    return str(TS_DIR)
-
-def is_turnstile_present(page) -> bool:
+# unlock_turnstile() removed — nodriver verify_cf() handles Turnstile
+# But keep is_turnstile_present() for detection/retry logic
+async def is_turnstile_present(page) -> bool:
     """Check if Turnstile CAPTCHA is present on page."""
-    return page.evaluate('''(() => {
-        // Check for Turnstile input fields
-        if (document.querySelector('input[name="cf_challenge_response"]')) return true;
-        if (document.querySelector('input[name="cf-turnstile-response"]')) return true;
+    try:
+        return await page.evaluate('''(() => {
+            // Check for Turnstile input fields
+            if (document.querySelector('input[name="cf_challenge_response"]')) return true;
+            if (document.querySelector('input[name="cf-turnstile-response"]')) return true;
 
-        // Check for Cloudflare challenge iframes
-        const iframes = document.querySelectorAll("iframe");
-        for (const f of iframes) {
-            if (f.src && f.src.includes("challenges.cloudflare.com")) return true;
-        }
+            // Check for Cloudflare challenge iframes
+            const iframes = document.querySelectorAll("iframe");
+            for (const f of iframes) {
+                if (f.src && f.src.includes("challenges.cloudflare.com")) return true;
+            }
 
-        // Check body text for challenge prompts
-        const body = document.body.innerText || "";
-        if (body.includes("Verify you are human")) return true;
-        if (body.includes("Let us know you are human")) return true;
+            // Check body text for challenge prompts
+            const body = document.body.innerText || "";
+            if (body.includes("Verify you are human")) return true;
+            if (body.includes("Let us know you are human")) return true;
 
-        return false;
-    })()''')
+            return false;
+        })()''')
+    except:
+        return False
 
 # ── Gmail IMAP ────────────────────────────────────────────────
 class GmailIMAP:
@@ -343,151 +319,8 @@ class Router9:
         conns = r.json().get('connections', [])
         return [c for c in conns if c.get('provider') == 'grok-cli']
 
-def add_to_router_single(acc):
-    """Add single account to 9Router (for parallel execution)."""
-    try:
-        r9 = Router9()
-        if not r9.login():
-            log_no("9router login failed")
-            return False
-
-        existing = {c.get('email') for c in r9.list_providers()}
-        email = acc.get('email', '')
-
-        if email in existing:
-            log_wait(f"{email} already exists"); return False
-    except Exception as e:
-        log_no(f"9router API error: {e}")
-        return False
-
-    # Pick proxy from pool
-    proxy_config = None
-    proxy_server = None
-    if PROXY_POOL:
-        proxy_server = PROXY_POOL.get_random_proxy()
-        if proxy_server:
-            proxy_config = {'server': f'http://{proxy_server}'}
-            log_ok(f"using proxy: {proxy_server} (failures: {PROXY_POOL._proxies.get(proxy_server, 0)}/{PROXY_POOL._max_failures})")
-        else:
-            log_no("all proxies blacklisted - using direct connection")
-
-    # Generate random user agent
-    user_agents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    ]
-    user_agent = random.choice(user_agents)
-
-    try:
-        with sync_playwright() as p:
-            launch_kwargs = {
-                'user_data_dir': f'/tmp/grok-router-{int(time.time()*1000)}-{random.randint(1000,9999)}',
-                'headless': False,
-                'no_viewport': True,
-                'executable_path': CHROME_BIN,
-                'user_agent': user_agent,
-                'args': [
-                    '--no-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-blink-features=AutomationControlled',
-                    '--use-fake-ui-for-media-stream',
-                    '--use-fake-device-for-media-stream',
-                    f'--user-agent={user_agent}',
-                ],
-                'ignore_default_args': ['--enable-automation'],
-            }
-            if proxy_config:
-                launch_kwargs['proxy'] = proxy_config
-
-            log_wait(f"launching browser (proxy: {proxy_server or 'none'})")
-            ctx = p.chromium.launch_persistent_context(**launch_kwargs)
-            try:
-                ctx.clear_cookies()
-                cookies = acc.get('sso_cookies', [])
-                if cookies:
-                    safe = []
-                    for c in cookies:
-                        cc = dict(c)
-                        if not cc.get('domain'):
-                            continue
-                        ss = cc.get('sameSite','Lax')
-                        if ss not in ('Strict','Lax','None'):
-                            ss = 'Lax'
-                        cc['sameSite'] = ss
-                        safe.append(cc)
-                    ctx.add_cookies(safe)
-
-                d = r9.device_code()
-                verify_url = d['verification_uri_complete']
-
-                page = ctx.new_page()
-                page.goto(verify_url, wait_until='domcontentloaded', timeout=45000)
-                time.sleep(3)
-
-                has_login = page.evaluate("!!document.querySelector('input[type=email], input[type=password]')")
-                if has_login:
-                    log_no(f"{email} SSO expired"); page.close(); ctx.close(); return False
-
-                try:
-                    page.get_by_role('button', name=re.compile(r'Continue', re.I)).click(timeout=5000)
-                    time.sleep(3)
-                except:
-                    pass
-
-                try:
-                    page.get_by_role('button', name=re.compile(r'Allow', re.I)).click(timeout=8000)
-                    time.sleep(2)
-                except:
-                    log_no(f"{email} Allow button not found"); page.close(); ctx.close(); return False
-
-                time.sleep(3); page.close()
-
-                for _ in range(60):
-                    res = r9.poll(d['device_code'], d['code_verifier'])
-                    if res.get('success'):
-                        log_ok(f"{email} added ✓")
-                        ctx.close()
-                        # Report proxy success
-                        if PROXY_POOL and proxy_server:
-                            PROXY_POOL.report_success(proxy_server)
-                            log_ok(f"proxy success: {proxy_server}")
-                        return True
-                    if not res.get('pending'):
-                        log_no(f"{email} poll error")
-                        ctx.close()
-                        # Report proxy failure
-                        if PROXY_POOL and proxy_server:
-                            PROXY_POOL.report_failure(proxy_server)
-                            failures = PROXY_POOL._proxies.get(proxy_server, 0)
-                            log_no(f"proxy failed: {proxy_server} ({failures}/{PROXY_POOL._max_failures})")
-                            if failures >= PROXY_POOL._max_failures:
-                                log_no(f"proxy BLACKLISTED: {proxy_server}")
-                        return False
-                    time.sleep(5)
-
-                log_no(f"{email} poll timeout")
-                ctx.close()
-                # Report proxy failure on timeout
-                if PROXY_POOL and proxy_server:
-                    PROXY_POOL.report_failure(proxy_server)
-                return False
-            except Exception as e:
-                log_no(f"{email} error: {e}")
-                ctx.close()
-                # Report proxy failure on exception
-                if PROXY_POOL and proxy_server:
-                    PROXY_POOL.report_failure(proxy_server)
-                return False
-    except Exception as outer_e:
-        # Report proxy failure on outer exception
-        if PROXY_POOL and proxy_server:
-            PROXY_POOL.report_failure(proxy_server)
-        return False
-
 # ── Main signup flow ──────────────────────────────────────────
-def signup_one(email_code_pair=None):
+async def signup_one(email_code_pair=None):
     """Register one Grok account. Returns account dict or raises exception."""
     # Step 1: Get device code from 9router
     r9 = Router9()
@@ -511,395 +344,516 @@ def signup_one(email_code_pair=None):
     signup_url = f'https://accounts.x.ai/sign-up?redirect=oauth2-provider&return_to={return_to}'
     log_ok(f"signup URL: {signup_url}")
 
-    ext_path = unlock_turnstile()
-
     # Pick proxy from pool
-    proxy_config = None
     proxy_server = None
     if PROXY_POOL:
         proxy_server = PROXY_POOL.get_random_proxy()
         if proxy_server:
-            proxy_config = {'server': f'http://{proxy_server}'}
             log_ok(f"using proxy: {proxy_server} (failures: {PROXY_POOL._proxies.get(proxy_server, 0)}/{PROXY_POOL._max_failures})")
         else:
             log_no("all proxies blacklisted - using direct connection")
 
-    # Generate random user agent
-    user_agents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    ]
-    user_agent = random.choice(user_agents)
-    log_ok(f"user agent: {user_agent[:50]}...")
-
     signup_success = False
     try:
-        with sync_playwright() as p:
-            launch_args = {
-                'user_data_dir': f'/tmp/grok-pw-{int(time.time()*1000)}-{random.randint(1000,9999)}',
-                'headless': False,
-                'no_viewport': True,
-                'user_agent': user_agent,
-                'args': [
-                    f'--disable-extensions-except={ext_path}',
-                    f'--load-extension={ext_path}',
-                    '--no-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-blink-features=AutomationControlled',
-                    '--use-fake-ui-for-media-stream',
-                    '--use-fake-device-for-media-stream',
-                    '--disable-webgl',
-                    '--disable-webgl2',
-                    f'--user-agent={user_agent}',
-                ],
-                'ignore_default_args': ['--enable-automation'],
-            }
-            if CHROME_BIN:
-                launch_args['executable_path'] = CHROME_BIN
-            if proxy_config:
-                launch_args['proxy'] = proxy_config
+        log_wait("launching nodriver browser...")
+        log_wait(f"  Proxy: {proxy_server or 'none'}")
 
-            log_wait("launching browser...")
-            log_wait(f"  Chrome: {CHROME_BIN or 'bundled'}")
-            log_wait(f"  Extension: {ext_path}")
-            log_wait(f"  Proxy: {proxy_server or 'none'}")
-            log_wait(f"  User-Agent: {user_agent[:60]}...")
+        browser = await uc.start(headless=False)
+        page = await browser.get(signup_url)
+        await asyncio.sleep(4)
 
-            ctx = p.chromium.launch_persistent_context(**launch_args)
+        # Diagnostic: log actual URL and title after load
+        actual_url = page.url
+        page_title = await page.evaluate("document.title")
+        log_wait(f"loaded: {actual_url}")
+        log_wait(f"title: {page_title}")
 
-            page = ctx.new_page()
-            page.goto(signup_url, wait_until='domcontentloaded', timeout=60000)
-            time.sleep(4)
+        # Check for error pages
+        page_text = (await page.evaluate("document.body.innerText || ''"))[:200]
+        if any(err in page_text.lower() for err in ['access denied', 'blocked', 'captcha', 'rate limit', '403', '429']):
+            log_no(f"possible block: {page_text[:100]}")
 
-            # Diagnostic: log actual URL and title after load
-            actual_url = page.url
-            page_title = page.title()
-            log_wait(f"loaded: {actual_url}")
-            log_wait(f"title: {page_title}")
+        log_ok("page loaded")
 
-            # Check for error pages
-            page_text = page.evaluate("document.body.innerText || ''")[:200]
-            if any(err in page_text.lower() for err in ['access denied', 'blocked', 'captcha', 'rate limit', '403', '429']):
-                log_no(f"possible block: {page_text[:100]}")
+        # Cookie banner
+        try:
+            btn = await page.find('Accept All Cookies', timeout=3)
+            if btn:
+                await btn.click()
+                await asyncio.sleep(0.5)
+        except:
+            pass
 
-            log_ok("page loaded")
+        try:
+            el = await page.find('Sign up with email', timeout=15)
+            await el.click()
+            await page.select('input[type=email]', timeout=8)
+            await asyncio.sleep(2)
+            log_ok("email form")
+        except Exception as e:
+            browser.stop()
+            raise RuntimeError(f"email form: {e}")
 
-            # Cookie banner
-            try:
-                page.get_by_role('button', name='Accept All Cookies').click(timeout=3000)
-                time.sleep(0.5)
-            except:
-                pass
+        # Reuse existing mail+code if retrying
+        if email_code_pair:
+            mail = email_code_pair[0]
+            addr = mail.addr
+            code = email_code_pair[1]
+            log_wait(f"retrying {addr}")
+        else:
+            mail = GmailIMAP()
+            addr = mail.create()
+            code = None
+        log_wait(addr)
 
-            try:
-                page.get_by_text('Sign up with email', exact=False).click(timeout=15000)
-                page.wait_for_selector('input[type=email]', timeout=8000)
-                time.sleep(2)
-                log_ok("email form")
-            except Exception as e:
-                ctx.close()
-                raise RuntimeError(f"email form: {e}")
+        email_input = await page.select('input[type=email]')
+        for char in addr:
+            await email_input.send_keys(char)
+            await asyncio.sleep(random.uniform(0.05, 0.15))
 
-            # Reuse existing mail+code if retrying
-            if email_code_pair:
-                mail = email_code_pair[0]
-                addr = mail.addr
-                code = email_code_pair[1]
-                log_wait(f"retrying {addr}")
-            else:
-                mail = GmailIMAP()
-                addr = mail.create()
-                code = None
-            log_wait(addr)
+        # Click Sign up button immediately (no Enter key delay)
+        try:
+            btn = await page.find('Sign up', timeout=3)
+            if btn:
+                await btn.click()
+        except:
+            await email_input.send_keys('\n')
 
-            page.locator('input[type=email]').type(addr, delay=random.randint(50, 150))
-            page.locator('input[type=email]').press('Enter')
+        # Wait for OTP input
+        await page.select('input[name=code]', timeout=20)
+        log_ok("email submitted")
 
-            # Wait for OTP input, with fallback to click 'Sign up' button
-            try:
-                page.wait_for_selector('input[name=code]', timeout=20000)
-            except:
-                page.get_by_role('button', name='Sign up').click(timeout=3000)
-                page.wait_for_selector('input[name=code]', timeout=15000)
-            log_ok("email submitted")
-
+        if not code:
+            code = wait_for_otp(mail, timeout=120)
             if not code:
-                code = wait_for_otp(mail, timeout=120)
-                if not code:
-                    mail.logout(); ctx.close()
-                    raise RuntimeError("OTP timeout 120s")
-            log_ok(f"OTP: {code}")
+                mail.logout()
+                browser.stop()
+                raise RuntimeError("OTP timeout 120s")
+        log_ok(f"OTP: {code}")
 
-            code_input = page.locator('input[name=code]').first
-            code_input.type(code, delay=random.randint(100, 200), timeout=15000)
-            time.sleep(0.3)
-            log_wait("submitting OTP...")
-            page.keyboard.press('Enter')
-            page.wait_for_selector('input[name=givenName]', timeout=20000)
-            log_ok("OTP verified")
+        code_input = await page.select('input[name=code]')
+        for char in code:
+            await code_input.send_keys(char)
+            await asyncio.sleep(random.uniform(0.1, 0.2))
+        await asyncio.sleep(0.3)
+        log_wait("submitting OTP...")
+        await code_input.send_keys('\n')
+        await page.select('input[name=givenName]', timeout=20)
+        log_ok("OTP verified")
 
-            local = addr.split('@')[0]
-            parts = re.split(r'[._\-]', local)
-            given = parts[0].capitalize()
-            family = (parts[1] if len(parts) > 1 else 'Xyz').capitalize()
+        local = addr.split('@')[0]
+        parts = re.split(r'[._\-]', local)
+        given = parts[0].capitalize()
+        family = (parts[1] if len(parts) > 1 else 'Xyz').capitalize()
 
-            page.locator('input[name=givenName]').type(given, delay=random.randint(80, 180))
-            page.locator('input[name=familyName]').type(family, delay=random.randint(80, 180))
-            page.locator('input[name=password]').type(PASSWORD, delay=random.randint(60, 120))
-            log_ok("form filled")
+        given_input = await page.select('input[name=givenName]')
+        for char in given:
+            await given_input.send_keys(char)
+            await asyncio.sleep(random.uniform(0.08, 0.18))
 
-            # Turnstile retry loop (max 3 attempts in same browser session)
-            turnstile_success = False
-            for ts_attempt in range(1, 4):
-                # Check if Turnstile actually present
-                log_wait(f"checking turnstile presence (attempt {ts_attempt}/3)...")
-                ts_present = False
+        family_input = await page.select('input[name=familyName]')
+        for char in family:
+            await family_input.send_keys(char)
+            await asyncio.sleep(random.uniform(0.08, 0.18))
+
+        password_input = await page.select('input[name=password]')
+        for char in PASSWORD:
+            await password_input.send_keys(char)
+            await asyncio.sleep(random.uniform(0.06, 0.12))
+        log_ok("form filled")
+
+        # Check if Turnstile present and wait for nodriver to solve (with retry)
+        for turnstile_attempt in range(1, 3):  # Max 2 attempts
+            log_wait(f"checking for Turnstile... (attempt {turnstile_attempt}/2)")
+            ts_present = await is_turnstile_present(page)
+
+            if ts_present:
+                log_ok("Turnstile detected, triggering solve...")
+
+                # Scroll Turnstile into view and click to activate
                 try:
-                    ts_present = is_turnstile_present(page)
-                    if ts_present:
-                        log_ok("turnstile detected on page")
-                    else:
-                        log_no("turnstile NOT detected - checking why...")
-                        # Diagnostic: what's on page instead?
-                        page_text = page.evaluate("document.body.innerText || ''")[:300]
-                        log_wait(f"  page text: {page_text}")
-                        log_wait(f"  URL: {page.url}")
+                    await page.evaluate("""
+                        (function() {
+                            const iframe = document.querySelector('iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]');
+                            if (iframe) {
+                                iframe.scrollIntoView({behavior: 'smooth', block: 'center'});
+                            }
+                        })();
+                    """)
+                    await asyncio.sleep(2)
+
+                    # Click on Turnstile iframe to trigger challenge
+                    log_wait("clicking Turnstile to activate...")
+                    await page.evaluate("""
+                        (function() {
+                            const iframe = document.querySelector('iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]');
+                            if (iframe) {
+                                iframe.click();
+                            }
+                        })();
+                    """)
+                    await asyncio.sleep(3)
                 except Exception as e:
-                    log_no(f"turnstile detection error: {e}")
+                    log_wait(f"Turnstile trigger error: {e}")
 
-                if not ts_present:
-                    log_no(f"turnstile missing (attempt {ts_attempt}/3) - possible causes:")
-                    log_wait("  - Proxy IP blocked by Cloudflare")
-                    log_wait("  - Page redirected to error")
-                    log_wait("  - Turnstile not loaded yet")
-                    time.sleep(3)  # Wait before retry
-                    continue
-
-                # Wait for turnstile token
-                log_wait(f"solving turnstile (attempt {ts_attempt}/3)...")
-
-                # Diagnostic: check page state
-                try:
-                    page_html = page.content()[:500]
-                    log_wait(f"  page HTML snippet: {page_html[:150]}...")
-                except:
-                    pass
-
-                # Diagnostic: check if extension loaded
-                try:
-                    ext_count = page.evaluate("chrome.runtime ? 1 : 0")
-                    log_wait(f"  extension API available: {ext_count == 1}")
-                except:
-                    log_no("  could not check extension status")
-
-                # Diagnostic: check turnstile iframe presence
-                try:
-                    iframe_count = page.evaluate("document.querySelectorAll('iframe[src*=\"turnstile\"]').length")
-                    log_wait(f"  turnstile iframes found: {iframe_count}")
-
-                    # Log all iframes for debugging
-                    all_iframes = page.evaluate("Array.from(document.querySelectorAll('iframe')).map(f => f.src)")
-                    if all_iframes:
-                        log_wait(f"  all iframes: {all_iframes}")
-                except Exception as e:
-                    log_no(f"  iframe check error: {e}")
-
-                token = ''
-                for i in range(10):
-                    token = page.evaluate("document.querySelector('input[name=cf-turnstile-response]')?.value || ''")
-                    if token:
-                        log_ok(f"turnstile solved (token: {token[:20]}...)")
+                # Give nodriver up to 60s to solve
+                log_wait("waiting for nodriver to solve Turnstile...")
+                turnstile_solved = False
+                for i in range(60):
+                    token = await page.evaluate("document.querySelector('input[name=cf-turnstile-response]')?.value || ''")
+                    if token and len(token) > 20:
+                        log_ok(f"Turnstile solved (token: {token[:20]}...)")
+                        turnstile_solved = True
                         break
-                    if i == 5:
-                        log_wait("  still waiting for turnstile token...")
-                    time.sleep(1)
 
-                if token:
-                    turnstile_success = True
-                    break
+                    # Re-click at 15s, 30s, 45s to re-trigger if stuck
+                    if i in [15, 30, 45]:
+                        log_wait(f"re-clicking Turnstile to re-trigger... ({i}s)")
+                        try:
+                            # Find Turnstile iframe and click using nodriver's click method
+                            iframe_elem = await page.query_selector('iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]')
+                            if iframe_elem:
+                                # Scroll into view first
+                                await page.evaluate("""
+                                    (function() {
+                                        const iframe = document.querySelector('iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]');
+                                        if (iframe) {
+                                            iframe.scrollIntoView({behavior: 'smooth', block: 'center'});
+                                        }
+                                    })();
+                                """)
+                                await asyncio.sleep(0.5)
 
-                # Turnstile failed - click "Go back" and retry with delay
-                log_no(f"turnstile timeout (attempt {ts_attempt}/3)")
-                if ts_attempt < 3:
-                    # Random delay between retries to avoid rate limiting
+                                # Click the iframe element using nodriver
+                                await iframe_elem.click()
+                                log_ok(f"Turnstile re-clicked at {i}s")
+                        except Exception as e:
+                            log_wait(f"re-click failed: {e}")
+                    elif i % 10 == 0 and i > 0:
+                        log_wait(f"still waiting for Turnstile solve... ({i}s)")
+
+                    await asyncio.sleep(1)
+
+                if turnstile_solved:
+                    break  # Success, exit retry loop
+
+                # Turnstile timeout - retry from email if first attempt
+                log_no(f"Turnstile timeout after 60s (attempt {turnstile_attempt}/2)")
+                if turnstile_attempt < 2:
                     retry_delay = random.randint(10, 30)
                     log_wait(f"waiting {retry_delay}s before retry...")
-                    time.sleep(retry_delay)
+                    await asyncio.sleep(retry_delay)
+
                     try:
-                        page.get_by_role('button', name=re.compile(r'Go back', re.I)).click(timeout=5000)
-                        log_ok("clicked Go back")
-                        time.sleep(2)
+                        # Click Go back
+                        back_btn = await page.find('Go back', timeout=5)
+                        if back_btn:
+                            await back_btn.click()
+                            log_ok("clicked Go back")
+                            await asyncio.sleep(2)
 
                         # Re-input email
-                        page.wait_for_selector('input[type=email]', timeout=8000)
-                        page.locator('input[type=email]').fill(addr)
-                        page.locator('input[type=email]').press('Enter')
-                        log_ok("re-submitted email")
+                        await page.select('input[type=email]', timeout=8)
+                        email_input = await page.select('input[type=email]')
+                        for char in addr:
+                            await email_input.send_keys(char)
+                            await asyncio.sleep(random.uniform(0.05, 0.15))
+
+                        # Click Sign up button immediately (same as first attempt)
+                        try:
+                            btn = await page.find('Sign up', timeout=3)
+                            if btn:
+                                await btn.click()
+                        except:
+                            await email_input.send_keys('\n')
 
                         # Wait for OTP input
-                        try:
-                            page.wait_for_selector('input[name=code]', timeout=20000)
-                        except:
-                            page.get_by_role('button', name='Sign up').click(timeout=3000)
-                            page.wait_for_selector('input[name=code]', timeout=15000)
+                        await page.select('input[name=code]', timeout=20)
+                        log_ok("email submitted")
 
-                        # Read new OTP from Gmail
-                        mail._seen_ids.clear()  # Clear seen IDs to read fresh email
+                        # Get new OTP (clear seen IDs first)
+                        mail._seen_ids.clear()
                         new_code = wait_for_otp(mail, timeout=120)
                         if not new_code:
-                            mail.logout(); ctx.close()
+                            mail.logout()
+                            browser.stop()
                             raise RuntimeError("OTP timeout on retry")
                         log_ok(f"new OTP: {new_code}")
 
                         # Submit OTP
-                        code_input = page.locator('input[name=code]').first
-                        code_input.fill(new_code, timeout=15000)
-                        time.sleep(0.3)
-                        page.keyboard.press('Enter')
-                        page.wait_for_selector('input[name=givenName]', timeout=20000)
+                        code_input = await page.select('input[name=code]')
+                        for char in new_code:
+                            await code_input.send_keys(char)
+                            await asyncio.sleep(random.uniform(0.1, 0.2))
+                        await code_input.send_keys('\n')
+                        await page.select('input[name=givenName]', timeout=20)
                         log_ok("OTP verified")
 
                         # Re-fill form
-                        page.locator('input[name=givenName]').fill(given)
-                        page.locator('input[name=familyName]').fill(family)
-                        page.locator('input[name=password]').fill(PASSWORD)
+                        given_input = await page.select('input[name=givenName]')
+                        for char in given:
+                            await given_input.send_keys(char)
+                            await asyncio.sleep(random.uniform(0.08, 0.18))
+
+                        family_input = await page.select('input[name=familyName]')
+                        for char in family:
+                            await family_input.send_keys(char)
+                            await asyncio.sleep(random.uniform(0.08, 0.18))
+
+                        password_input = await page.select('input[name=password]')
+                        for char in PASSWORD:
+                            await password_input.send_keys(char)
+                            await asyncio.sleep(random.uniform(0.06, 0.12))
                         log_ok("form re-filled")
+
+                        # Wait for Turnstile to load
+                        await asyncio.sleep(3)
+                        # Loop continues to attempt 2
                     except Exception as e:
                         log_no(f"retry failed: {e}")
                         break
+            else:
+                log_ok("no Turnstile detected, proceeding...")
+                turnstile_solved = True
+                break
 
-            if not turnstile_success:
-                mail.logout(); ctx.close()
-                raise RuntimeError("turnstile failed after 3 attempts")
-
-            page.get_by_role('button', name='Complete sign up').click()
-            log_ok("submitted")
-
-            # Wait for OAuth page elements to appear (smarter than fixed sleep)
-            log_wait("waiting for OAuth page...")
-            try:
-                # Wait for Continue button or Allow button to appear
-                page.wait_for_selector('button:has-text("Continue"), button:has-text("Allow")', timeout=15000)
-                log_ok("OAuth page loaded")
-            except:
-                log_wait("OAuth page detection timeout, continuing...")
-            time.sleep(1)
-
-            # Accept cookies if banner appears after redirect
-            try:
-                page.get_by_role('button', name='Accept All Cookies').click(timeout=2000)
-                log_ok("accepted cookies")
-                time.sleep(0.5)
-            except:
-                pass
-
-            # Click Continue button (if present - may auto-continue)
-            try:
-                page.get_by_role('button', name=re.compile(r'Continue', re.I)).click(timeout=5000)
-                log_ok("clicked Continue")
-                time.sleep(1)
-            except Exception:
-                log_wait("Continue button not found or auto-continued")
-
-            # Click Allow button
-            try:
-                page.get_by_role('button', name=re.compile(r'Allow', re.I)).click(timeout=8000)
-                log_ok("clicked Allow")
-                time.sleep(1)
-            except Exception as e:
-                mail.logout(); ctx.close()
-                raise RuntimeError(f"Allow button not found: {e}")
-
-            # Close browser immediately after Allow
-            log_ok("closing browser...")
+        # Check if we succeeded
+        if not turnstile_solved:
             mail.logout()
-            ctx.close()
+            browser.stop()
+            raise RuntimeError("Turnstile failed after 2 attempts")
 
-            # Poll 9router with retry mechanism (guaranteed delivery)
-            log_wait("polling 9router (guaranteed retry)...")
-            poll_success = False
-            max_poll_attempts = 20  # 20 attempts × 5s = 100s max
+        # Click submit
+        submit_btn = await page.find('Complete sign up', timeout=8)
+        if not submit_btn:
+            raise RuntimeError("Complete sign up button not found")
+        await submit_btn.click()
+        log_ok("submitted")
 
-            for attempt in range(1, max_poll_attempts + 1):
-                try:
-                    res = r9.poll(device_code, code_verifier)
-                    if res.get('success'):
-                        log_ok(f"✓ 9router import success (attempt {attempt}/{max_poll_attempts})")
-                        poll_success = True
-                        break
-                    if not res.get('pending'):
-                        # Not pending but not success = error, retry anyway
-                        log_wait(f"poll error (attempt {attempt}/{max_poll_attempts}): {res.get('error', 'unknown')}, retrying...")
-                        time.sleep(5)
-                        continue
-                    # Still pending, keep polling
-                    if attempt % 5 == 0:
-                        log_wait(f"still polling... (attempt {attempt}/{max_poll_attempts})")
-                    time.sleep(5)
-                except Exception as poll_err:
-                    log_wait(f"poll exception (attempt {attempt}/{max_poll_attempts}): {poll_err}, retrying...")
+        # Wait for navigation to OAuth page after submit
+        log_wait("waiting for redirect to OAuth page...")
+        oauth_reached = False
+        for i in range(20):
+            # Use evaluate to get current URL (more reliable than page.url property)
+            current_url = await page.evaluate("window.location.href")
+            if 'oauth2/device?user_code=' in current_url:
+                oauth_reached = True
+                log_ok(f"redirected to OAuth page: {current_url}")
+                break
+            if i % 5 == 0 and i > 0:
+                log_wait(f"still waiting for OAuth redirect... (current: {current_url})")
+            await asyncio.sleep(1)
+
+        # If stuck on signup page with return_to param, manually navigate
+        if not oauth_reached:
+            current_url = await page.evaluate("window.location.href")
+            if 'return_to=' in current_url and 'oauth2/device' in current_url:
+                # Extract the return_to URL and navigate to it
+                import urllib.parse
+                parsed = urllib.parse.urlparse(current_url)
+                params = urllib.parse.parse_qs(parsed.query)
+                return_to = params.get('return_to', [''])[0]
+
+                if return_to:
+                    # Build full OAuth URL
+                    oauth_url = f"https://accounts.x.ai{return_to}"
+                    log_wait(f"auto-redirect failed, navigating manually to: {oauth_url}")
+                    await page.get(oauth_url)
+                    await asyncio.sleep(3)
+
+                    # Check if we reached OAuth page now
+                    current_url = await page.evaluate("window.location.href")
+                    if 'oauth2/device?user_code=' in current_url:
+                        oauth_reached = True
+                        log_ok(f"manual navigation succeeded: {current_url}")
+
+        if not oauth_reached:
+            current_url = await page.evaluate("window.location.href")
+            page_text = await page.evaluate("document.body.innerText || ''")
+            log_no(f"OAuth page not reached after 20s + manual navigation")
+            log_no(f"Current URL: {current_url}")
+            log_no(f"Page text: {page_text[:300]}")
+            mail.logout()
+            browser.stop()
+            raise RuntimeError(f"did not reach OAuth page, stuck at: {current_url}")
+
+        # Wait for OAuth page to be ready
+        await asyncio.sleep(2)
+
+        # Check current URL
+        current_url = await page.evaluate("window.location.href")
+        log_wait(f"OAuth page: {current_url}")
+
+        # Click Continue button
+        log_wait("looking for Continue button...")
+        try:
+            btn = await page.find('Continue', timeout=5)
+            if btn:
+                await btn.click()
+                await asyncio.sleep(2)
+                current_url = await page.evaluate("window.location.href")
+                log_ok(f"Continue clicked → {current_url}")
+            else:
+                log_wait("Continue button not found (may auto-continue)")
+        except Exception as e:
+            log_wait(f"Continue button error: {e}")
+
+        # Wait for consent page
+        await asyncio.sleep(2)
+
+        # Click Allow button with action=allow
+        log_wait("looking for Allow button...")
+        try:
+            allow_found = await page.evaluate("""
+                (function() {
+                    const btns = Array.from(document.querySelectorAll('button[type="submit"]'));
+                    return btns.some(b => b.textContent.trim() === 'Allow');
+                })();
+            """)
+
+            if allow_found:
+                log_wait("Allow button found, clicking...")
+
+                # Set action=allow and click
+                await page.evaluate("""
+                    (function() {
+                        const actionInput = document.querySelector('input[name="action"]');
+                        if (actionInput) {
+                            actionInput.value = 'allow';
+                        }
+
+                        const btns = Array.from(document.querySelectorAll('button[type="submit"]'));
+                        const allowBtn = btns.find(b => b.textContent.trim() === 'Allow');
+                        if (allowBtn) {
+                            allowBtn.click();
+                        }
+                    })();
+                """)
+
+                log_ok("Allow button clicked")
+
+                # Wait for redirect
+                await asyncio.sleep(3)
+                current_url = await page.evaluate("window.location.href")
+                log_ok(f"after Allow: {current_url}")
+
+                # If /approve error, retry once
+                if '/approve' in current_url:
+                    log_wait("/approve error, retrying...")
+                    await page.evaluate("window.history.back()")
+                    await asyncio.sleep(2)
+
+                    await page.evaluate("""
+                        (function() {
+                            const actionInput = document.querySelector('input[name="action"]');
+                            if (actionInput) {
+                                actionInput.value = 'allow';
+                            }
+                            const btns = Array.from(document.querySelectorAll('button[type="submit"]'));
+                            const allowBtn = btns.find(b => b.textContent.trim() === 'Allow');
+                            if (allowBtn) {
+                                allowBtn.click();
+                            }
+                        })();
+                    """)
+
+                    await asyncio.sleep(3)
+                    current_url = await page.evaluate("window.location.href")
+                    log_ok(f"after retry: {current_url}")
+            else:
+                log_wait("Allow button not found")
+                page_text = await page.evaluate("document.body.innerText || ''")
+                log_wait(f"Page text: {page_text[:200]}")
+        except Exception as e:
+            log_wait(f"Allow error: {e}")
+
+        # Close browser
+        final_url = await page.evaluate("window.location.href")
+        log_ok(f"final URL: {final_url}")
+
+        mail.logout()
+        browser.stop()
+
+        # Poll 9router with retry mechanism
+        log_wait(f"polling 9router (device_code: {device_code[:20]}..., verifier: {code_verifier[:20]}...)")
+        poll_success = False
+        max_poll_attempts = 20
+
+        for attempt in range(1, max_poll_attempts + 1):
+            try:
+                res = r9.poll(device_code, code_verifier)
+                log_wait(f"poll attempt {attempt}: {res}")
+
+                if res.get('success'):
+                    log_ok(f"✓ 9router import success (attempt {attempt}/{max_poll_attempts})")
+                    poll_success = True
+                    break
+                if not res.get('pending'):
+                    log_no(f"poll error (attempt {attempt}): {res.get('error', 'unknown')}, retrying...")
                     time.sleep(5)
                     continue
+                if attempt % 3 == 0:
+                    log_wait(f"still polling... (attempt {attempt}/{max_poll_attempts}, status: pending)")
+                time.sleep(5)
+            except Exception as poll_err:
+                log_no(f"poll exception (attempt {attempt}): {poll_err}, retrying...")
+                time.sleep(5)
+                continue
 
-            if not poll_success:
-                raise RuntimeError(f"9router poll failed after {max_poll_attempts} attempts - account created but not imported!")
+        if not poll_success:
+            raise RuntimeError(f"9router poll failed after {max_poll_attempts} attempts - account created but not imported!")
 
-            # Collect cookies (browser already closed, use empty list)
-            sso_cookies = []
+        # Collect cookies (browser already closed, use empty list)
+        sso_cookies = []
 
-            # Check if we have JWT token (skip - browser closed)
-            jwt_found = False
+        # Check if we have JWT token (skip - browser closed)
+        jwt_found = False
 
-            data = {
-                'email': addr,
-                'password': PASSWORD,
-                'code': code,
-                'sso_cookies': sso_cookies,
-                'final_url': '',
-                'timestamp': int(time.time()),
-            }
+        data = {
+            'email': addr,
+            'password': PASSWORD,
+            'code': code,
+            'sso_cookies': sso_cookies,
+            'final_url': '',
+            'timestamp': int(time.time()),
+        }
 
-            # Save to sso.txt (JSON lines)
-            OUT.parent.mkdir(parents=True, exist_ok=True)
-            with open(OUT, 'a') as f:
-                f.write(json.dumps(data) + '\n')
-            log_ok(f"saved → {OUT}")
+        # Save to sso.txt (JSON lines)
+        OUT.parent.mkdir(parents=True, exist_ok=True)
+        with open(OUT, 'a') as f:
+            f.write(json.dumps(data) + '\n')
+        log_ok(f"saved → {OUT}")
 
-            # Save to ~/.grok/auth.json (Grok CLI format)
-            grok_dir = Path.home() / '.grok'
-            grok_auth = grok_dir / 'auth.json'
-            grok_dir.mkdir(parents=True, exist_ok=True)
+        # Save to ~/.grok/auth.json (Grok CLI format)
+        grok_dir = Path.home() / '.grok'
+        grok_auth = grok_dir / 'auth.json'
+        grok_dir.mkdir(parents=True, exist_ok=True)
 
-            # Extract JWT token from sso cookie (.x.ai domain)
-            jwt_token = None
-            for c in sso_cookies:
-                if c['name'] == 'sso' and '.x.ai' in c.get('domain', ''):
-                    jwt_token = c['value']
-                    break
+        # Extract JWT token from sso cookie (.x.ai domain)
+        jwt_token = None
+        for c in sso_cookies:
+            if c['name'] == 'sso' and '.x.ai' in c.get('domain', ''):
+                jwt_token = c['value']
+                break
 
-            # Load existing auth or create new
-            if grok_auth.exists():
-                try:
-                    grok_data = json.loads(grok_auth.read_text())
-                except:
-                    grok_data = {'accounts': []}
-            else:
+        # Load existing auth or create new
+        if grok_auth.exists():
+            try:
+                grok_data = json.loads(grok_auth.read_text())
+            except:
                 grok_data = {'accounts': []}
+        else:
+            grok_data = {'accounts': []}
 
-            # Add account (avoid duplicates)
-            existing_emails = {acc.get('email') for acc in grok_data.get('accounts', [])}
-            if addr not in existing_emails:
-                grok_data['accounts'].append({
-                    'email': addr,
-                    'token': jwt_token,
-                })
-                grok_auth.write_text(json.dumps(grok_data, indent=2))
-                log_ok(f"saved → {grok_auth}")
-
-            mail.logout()
-            ctx.close()
+        # Add account (avoid duplicates)
+        existing_emails = {acc.get('email') for acc in grok_data.get('accounts', [])}
+        if addr not in existing_emails:
+            grok_data['accounts'].append({
+                'email': addr,
+                'token': jwt_token,
+            })
+            grok_auth.write_text(json.dumps(grok_data, indent=2))
+            log_ok(f"saved → {grok_auth}")
 
         # Report proxy success
         if PROXY_POOL and proxy_server:
@@ -928,11 +882,10 @@ def run_accounts():
     successful_accounts = []
 
     print(f"\n{CYN}{'='*74}{RST}")
-    print(f"{CYN}║{RST} {BOLD}GROK SIGNUP + 9ROUTER AUTO-IMPORT{RST}")
+    print(f"{CYN}║{RST} {BOLD}GROK SIGNUP + 9ROUTER AUTO-IMPORT (nodriver){RST}")
     print(f"{CYN}{'='*74}{RST}")
     print(f"{CYN}║{RST} Mode: {'INFINITE' if max_accounts <= 0 else f'{max_accounts} accounts'}")
     print(f"{CYN}║{RST} Batch Size: {BATCH_SIZE}")
-    print(f"{CYN}║{RST} Chrome: {CHROME_BIN or 'bundled'}")
     print(f"{CYN}║{RST} Auto-Import: {'YES' if auto_add else 'NO'}")
 
     # Proxy pool stats
@@ -942,17 +895,9 @@ def run_accounts():
     else:
         print(f"{YEL}║{RST} Proxy Pool: disabled (PROXIES env not set)")
 
-    print(f"{CYN}║{RST} Extension: {TS_DIR}")
     print(f"{CYN}║{RST} Account Retries: {MAX_ACCOUNT_RETRIES}")
     print(f"{CYN}║{RST} Delay Between Accounts: {DELAY_SECONDS}s")
     print(f"{CYN}║{RST} Pause Between Batches: {PAUSE_SECONDS}s")
-
-    # Diagnostic: check extension files
-    if (TS_DIR / 'manifest.json').exists():
-        print(f"{GRN}║{RST} ✓ turnstilePatch extension found")
-    else:
-        print(f"{RED}║{RST} ✗ turnstilePatch extension MISSING")
-
     print(f"{CYN}{'='*74}{RST}\n")
 
     while max_accounts <= 0 or total < max_accounts:
@@ -971,7 +916,7 @@ def run_accounts():
 
             for attempt in range(1, MAX_ACCOUNT_RETRIES + 1):
                 try:
-                    acc = signup_one(email_code_pair)
+                    acc = asyncio.run(signup_one(email_code_pair))
                     ok_n += 1
                     elapsed = time.time() - t0
                     print(f"{GRN}│ ✓{RST} [{total}] {acc['email']} → imported in {elapsed:.1f}s")
