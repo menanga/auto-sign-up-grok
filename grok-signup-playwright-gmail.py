@@ -537,296 +537,296 @@ def signup_one(email_code_pair=None):
                 launch_args['proxy'] = proxy_config
 
             log_wait("launching browser...")
-        log_wait(f"  Chrome: {CHROME_BIN or 'bundled'}")
-        log_wait(f"  Extension: {ext_path}")
-        log_wait(f"  Proxy: {proxy_server or 'none'}")
-        log_wait(f"  User-Agent: {user_agent[:60]}...")
+            log_wait(f"  Chrome: {CHROME_BIN or 'bundled'}")
+            log_wait(f"  Extension: {ext_path}")
+            log_wait(f"  Proxy: {proxy_server or 'none'}")
+            log_wait(f"  User-Agent: {user_agent[:60]}...")
 
-        ctx = p.chromium.launch_persistent_context(**launch_args)
+            ctx = p.chromium.launch_persistent_context(**launch_args)
 
-        page = ctx.new_page()
-        page.goto(signup_url, wait_until='domcontentloaded', timeout=60000)
-        time.sleep(4)
-        log_ok("page loaded")
+            page = ctx.new_page()
+            page.goto(signup_url, wait_until='domcontentloaded', timeout=60000)
+            time.sleep(4)
+            log_ok("page loaded")
 
-        # Cookie banner
-        try:
-            page.get_by_role('button', name='Accept All Cookies').click(timeout=3000)
-            time.sleep(0.5)
-        except:
-            pass
-
-        try:
-            page.get_by_text('Sign up with email', exact=False).click(timeout=15000)
-            page.wait_for_selector('input[type=email]', timeout=8000)
-            time.sleep(2)
-            log_ok("email form")
-        except Exception as e:
-            ctx.close()
-            raise RuntimeError(f"email form: {e}")
-
-        # Reuse existing mail+code if retrying
-        if email_code_pair:
-            mail = email_code_pair[0]
-            addr = mail.addr
-            code = email_code_pair[1]
-            log_wait(f"retrying {addr}")
-        else:
-            mail = GmailIMAP()
-            addr = mail.create()
-            code = None
-        log_wait(addr)
-
-        page.locator('input[type=email]').fill(addr)
-        page.locator('input[type=email]').press('Enter')
-
-        # Wait for OTP input, with fallback to click 'Sign up' button
-        try:
-            page.wait_for_selector('input[name=code]', timeout=20000)
-        except:
-            page.get_by_role('button', name='Sign up').click(timeout=3000)
-            page.wait_for_selector('input[name=code]', timeout=15000)
-        log_ok("email submitted")
-
-        if not code:
-            code = wait_for_otp(mail, timeout=120)
-            if not code:
-                mail.logout(); ctx.close()
-                raise RuntimeError("OTP timeout 120s")
-        log_ok(f"OTP: {code}")
-
-        code_input = page.locator('input[name=code]').first
-        code_input.fill(code, timeout=15000)
-        time.sleep(0.3)
-        log_wait("submitting OTP...")
-        page.keyboard.press('Enter')
-        page.wait_for_selector('input[name=givenName]', timeout=20000)
-        log_ok("OTP verified")
-
-        local = addr.split('@')[0]
-        parts = re.split(r'[._\-]', local)
-        given = parts[0].capitalize()
-        family = (parts[1] if len(parts) > 1 else 'Xyz').capitalize()
-
-        page.locator('input[name=givenName]').fill(given)
-        page.locator('input[name=familyName]').fill(family)
-        page.locator('input[name=password]').fill(PASSWORD)
-        log_ok("form filled")
-
-        # Turnstile retry loop (max 3 attempts in same browser session)
-        turnstile_success = False
-        for ts_attempt in range(1, 4):
-            # Wait for turnstile token
-            log_wait(f"solving turnstile (attempt {ts_attempt}/3)...")
-
-            # Diagnostic: check if extension loaded
+            # Cookie banner
             try:
-                ext_count = page.evaluate("chrome.runtime ? 1 : 0")
-                log_wait(f"  extension API available: {ext_count == 1}")
-            except:
-                log_no("  could not check extension status")
-
-            # Diagnostic: check turnstile iframe presence
-            try:
-                iframe_count = page.evaluate("document.querySelectorAll('iframe[src*=\"turnstile\"]').length")
-                log_wait(f"  turnstile iframes found: {iframe_count}")
+                page.get_by_role('button', name='Accept All Cookies').click(timeout=3000)
+                time.sleep(0.5)
             except:
                 pass
 
-            token = ''
-            for i in range(10):
-                token = page.evaluate("document.querySelector('input[name=cf-turnstile-response]')?.value || ''")
-                if token:
-                    log_ok(f"turnstile solved (token: {token[:20]}...)")
-                    break
-                if i == 5:
-                    log_wait("  still waiting for turnstile token...")
-                time.sleep(1)
-
-            if token:
-                turnstile_success = True
-                break
-
-            # Turnstile failed - click "Go back" and retry with delay
-            log_no(f"turnstile timeout (attempt {ts_attempt}/3)")
-            if ts_attempt < 3:
-                # Random delay between retries to avoid rate limiting
-                retry_delay = random.randint(10, 30)
-                log_wait(f"waiting {retry_delay}s before retry...")
-                time.sleep(retry_delay)
-                try:
-                    page.get_by_role('button', name=re.compile(r'Go back', re.I)).click(timeout=5000)
-                    log_ok("clicked Go back")
-                    time.sleep(2)
-
-                    # Re-input email
-                    page.wait_for_selector('input[type=email]', timeout=8000)
-                    page.locator('input[type=email]').fill(addr)
-                    page.locator('input[type=email]').press('Enter')
-                    log_ok("re-submitted email")
-
-                    # Wait for OTP input
-                    try:
-                        page.wait_for_selector('input[name=code]', timeout=20000)
-                    except:
-                        page.get_by_role('button', name='Sign up').click(timeout=3000)
-                        page.wait_for_selector('input[name=code]', timeout=15000)
-
-                    # Read new OTP from Gmail
-                    mail._seen_ids.clear()  # Clear seen IDs to read fresh email
-                    new_code = wait_for_otp(mail, timeout=120)
-                    if not new_code:
-                        mail.logout(); ctx.close()
-                        raise RuntimeError("OTP timeout on retry")
-                    log_ok(f"new OTP: {new_code}")
-
-                    # Submit OTP
-                    code_input = page.locator('input[name=code]').first
-                    code_input.fill(new_code, timeout=15000)
-                    time.sleep(0.3)
-                    page.keyboard.press('Enter')
-                    page.wait_for_selector('input[name=givenName]', timeout=20000)
-                    log_ok("OTP verified")
-
-                    # Re-fill form
-                    page.locator('input[name=givenName]').fill(given)
-                    page.locator('input[name=familyName]').fill(family)
-                    page.locator('input[name=password]').fill(PASSWORD)
-                    log_ok("form re-filled")
-                except Exception as e:
-                    log_no(f"retry failed: {e}")
-                    break
-
-        if not turnstile_success:
-            mail.logout(); ctx.close()
-            raise RuntimeError("turnstile failed after 3 attempts")
-
-        page.get_by_role('button', name='Complete sign up').click()
-        log_ok("submitted")
-
-        # Wait for OAuth page elements to appear (smarter than fixed sleep)
-        log_wait("waiting for OAuth page...")
-        try:
-            # Wait for Continue button or Allow button to appear
-            page.wait_for_selector('button:has-text("Continue"), button:has-text("Allow")', timeout=15000)
-            log_ok("OAuth page loaded")
-        except:
-            log_wait("OAuth page detection timeout, continuing...")
-        time.sleep(1)
-
-        # Accept cookies if banner appears after redirect
-        try:
-            page.get_by_role('button', name='Accept All Cookies').click(timeout=2000)
-            log_ok("accepted cookies")
-            time.sleep(0.5)
-        except:
-            pass
-
-        # Click Continue button (if present - may auto-continue)
-        try:
-            page.get_by_role('button', name=re.compile(r'Continue', re.I)).click(timeout=5000)
-            log_ok("clicked Continue")
-            time.sleep(1)
-        except Exception:
-            log_wait("Continue button not found or auto-continued")
-
-        # Click Allow button
-        try:
-            page.get_by_role('button', name=re.compile(r'Allow', re.I)).click(timeout=8000)
-            log_ok("clicked Allow")
-            time.sleep(1)
-        except Exception as e:
-            mail.logout(); ctx.close()
-            raise RuntimeError(f"Allow button not found: {e}")
-
-        # Close browser immediately after Allow
-        log_ok("closing browser...")
-        mail.logout()
-        ctx.close()
-
-        # Poll 9router with retry mechanism (guaranteed delivery)
-        log_wait("polling 9router (guaranteed retry)...")
-        poll_success = False
-        max_poll_attempts = 20  # 20 attempts × 5s = 100s max
-
-        for attempt in range(1, max_poll_attempts + 1):
             try:
-                res = r9.poll(device_code, code_verifier)
-                if res.get('success'):
-                    log_ok(f"✓ 9router import success (attempt {attempt}/{max_poll_attempts})")
-                    poll_success = True
+                page.get_by_text('Sign up with email', exact=False).click(timeout=15000)
+                page.wait_for_selector('input[type=email]', timeout=8000)
+                time.sleep(2)
+                log_ok("email form")
+            except Exception as e:
+                ctx.close()
+                raise RuntimeError(f"email form: {e}")
+
+            # Reuse existing mail+code if retrying
+            if email_code_pair:
+                mail = email_code_pair[0]
+                addr = mail.addr
+                code = email_code_pair[1]
+                log_wait(f"retrying {addr}")
+            else:
+                mail = GmailIMAP()
+                addr = mail.create()
+                code = None
+            log_wait(addr)
+
+            page.locator('input[type=email]').fill(addr)
+            page.locator('input[type=email]').press('Enter')
+
+            # Wait for OTP input, with fallback to click 'Sign up' button
+            try:
+                page.wait_for_selector('input[name=code]', timeout=20000)
+            except:
+                page.get_by_role('button', name='Sign up').click(timeout=3000)
+                page.wait_for_selector('input[name=code]', timeout=15000)
+            log_ok("email submitted")
+
+            if not code:
+                code = wait_for_otp(mail, timeout=120)
+                if not code:
+                    mail.logout(); ctx.close()
+                    raise RuntimeError("OTP timeout 120s")
+            log_ok(f"OTP: {code}")
+
+            code_input = page.locator('input[name=code]').first
+            code_input.fill(code, timeout=15000)
+            time.sleep(0.3)
+            log_wait("submitting OTP...")
+            page.keyboard.press('Enter')
+            page.wait_for_selector('input[name=givenName]', timeout=20000)
+            log_ok("OTP verified")
+
+            local = addr.split('@')[0]
+            parts = re.split(r'[._\-]', local)
+            given = parts[0].capitalize()
+            family = (parts[1] if len(parts) > 1 else 'Xyz').capitalize()
+
+            page.locator('input[name=givenName]').fill(given)
+            page.locator('input[name=familyName]').fill(family)
+            page.locator('input[name=password]').fill(PASSWORD)
+            log_ok("form filled")
+
+            # Turnstile retry loop (max 3 attempts in same browser session)
+            turnstile_success = False
+            for ts_attempt in range(1, 4):
+                # Wait for turnstile token
+                log_wait(f"solving turnstile (attempt {ts_attempt}/3)...")
+
+                # Diagnostic: check if extension loaded
+                try:
+                    ext_count = page.evaluate("chrome.runtime ? 1 : 0")
+                    log_wait(f"  extension API available: {ext_count == 1}")
+                except:
+                    log_no("  could not check extension status")
+
+                # Diagnostic: check turnstile iframe presence
+                try:
+                    iframe_count = page.evaluate("document.querySelectorAll('iframe[src*=\"turnstile\"]').length")
+                    log_wait(f"  turnstile iframes found: {iframe_count}")
+                except:
+                    pass
+
+                token = ''
+                for i in range(10):
+                    token = page.evaluate("document.querySelector('input[name=cf-turnstile-response]')?.value || ''")
+                    if token:
+                        log_ok(f"turnstile solved (token: {token[:20]}...)")
+                        break
+                    if i == 5:
+                        log_wait("  still waiting for turnstile token...")
+                    time.sleep(1)
+
+                if token:
+                    turnstile_success = True
                     break
-                if not res.get('pending'):
-                    # Not pending but not success = error, retry anyway
-                    log_wait(f"poll error (attempt {attempt}/{max_poll_attempts}): {res.get('error', 'unknown')}, retrying...")
+
+                # Turnstile failed - click "Go back" and retry with delay
+                log_no(f"turnstile timeout (attempt {ts_attempt}/3)")
+                if ts_attempt < 3:
+                    # Random delay between retries to avoid rate limiting
+                    retry_delay = random.randint(10, 30)
+                    log_wait(f"waiting {retry_delay}s before retry...")
+                    time.sleep(retry_delay)
+                    try:
+                        page.get_by_role('button', name=re.compile(r'Go back', re.I)).click(timeout=5000)
+                        log_ok("clicked Go back")
+                        time.sleep(2)
+
+                        # Re-input email
+                        page.wait_for_selector('input[type=email]', timeout=8000)
+                        page.locator('input[type=email]').fill(addr)
+                        page.locator('input[type=email]').press('Enter')
+                        log_ok("re-submitted email")
+
+                        # Wait for OTP input
+                        try:
+                            page.wait_for_selector('input[name=code]', timeout=20000)
+                        except:
+                            page.get_by_role('button', name='Sign up').click(timeout=3000)
+                            page.wait_for_selector('input[name=code]', timeout=15000)
+
+                        # Read new OTP from Gmail
+                        mail._seen_ids.clear()  # Clear seen IDs to read fresh email
+                        new_code = wait_for_otp(mail, timeout=120)
+                        if not new_code:
+                            mail.logout(); ctx.close()
+                            raise RuntimeError("OTP timeout on retry")
+                        log_ok(f"new OTP: {new_code}")
+
+                        # Submit OTP
+                        code_input = page.locator('input[name=code]').first
+                        code_input.fill(new_code, timeout=15000)
+                        time.sleep(0.3)
+                        page.keyboard.press('Enter')
+                        page.wait_for_selector('input[name=givenName]', timeout=20000)
+                        log_ok("OTP verified")
+
+                        # Re-fill form
+                        page.locator('input[name=givenName]').fill(given)
+                        page.locator('input[name=familyName]').fill(family)
+                        page.locator('input[name=password]').fill(PASSWORD)
+                        log_ok("form re-filled")
+                    except Exception as e:
+                        log_no(f"retry failed: {e}")
+                        break
+
+            if not turnstile_success:
+                mail.logout(); ctx.close()
+                raise RuntimeError("turnstile failed after 3 attempts")
+
+            page.get_by_role('button', name='Complete sign up').click()
+            log_ok("submitted")
+
+            # Wait for OAuth page elements to appear (smarter than fixed sleep)
+            log_wait("waiting for OAuth page...")
+            try:
+                # Wait for Continue button or Allow button to appear
+                page.wait_for_selector('button:has-text("Continue"), button:has-text("Allow")', timeout=15000)
+                log_ok("OAuth page loaded")
+            except:
+                log_wait("OAuth page detection timeout, continuing...")
+            time.sleep(1)
+
+            # Accept cookies if banner appears after redirect
+            try:
+                page.get_by_role('button', name='Accept All Cookies').click(timeout=2000)
+                log_ok("accepted cookies")
+                time.sleep(0.5)
+            except:
+                pass
+
+            # Click Continue button (if present - may auto-continue)
+            try:
+                page.get_by_role('button', name=re.compile(r'Continue', re.I)).click(timeout=5000)
+                log_ok("clicked Continue")
+                time.sleep(1)
+            except Exception:
+                log_wait("Continue button not found or auto-continued")
+
+            # Click Allow button
+            try:
+                page.get_by_role('button', name=re.compile(r'Allow', re.I)).click(timeout=8000)
+                log_ok("clicked Allow")
+                time.sleep(1)
+            except Exception as e:
+                mail.logout(); ctx.close()
+                raise RuntimeError(f"Allow button not found: {e}")
+
+            # Close browser immediately after Allow
+            log_ok("closing browser...")
+            mail.logout()
+            ctx.close()
+
+            # Poll 9router with retry mechanism (guaranteed delivery)
+            log_wait("polling 9router (guaranteed retry)...")
+            poll_success = False
+            max_poll_attempts = 20  # 20 attempts × 5s = 100s max
+
+            for attempt in range(1, max_poll_attempts + 1):
+                try:
+                    res = r9.poll(device_code, code_verifier)
+                    if res.get('success'):
+                        log_ok(f"✓ 9router import success (attempt {attempt}/{max_poll_attempts})")
+                        poll_success = True
+                        break
+                    if not res.get('pending'):
+                        # Not pending but not success = error, retry anyway
+                        log_wait(f"poll error (attempt {attempt}/{max_poll_attempts}): {res.get('error', 'unknown')}, retrying...")
+                        time.sleep(5)
+                        continue
+                    # Still pending, keep polling
+                    if attempt % 5 == 0:
+                        log_wait(f"still polling... (attempt {attempt}/{max_poll_attempts})")
+                    time.sleep(5)
+                except Exception as poll_err:
+                    log_wait(f"poll exception (attempt {attempt}/{max_poll_attempts}): {poll_err}, retrying...")
                     time.sleep(5)
                     continue
-                # Still pending, keep polling
-                if attempt % 5 == 0:
-                    log_wait(f"still polling... (attempt {attempt}/{max_poll_attempts})")
-                time.sleep(5)
-            except Exception as poll_err:
-                log_wait(f"poll exception (attempt {attempt}/{max_poll_attempts}): {poll_err}, retrying...")
-                time.sleep(5)
-                continue
 
-        if not poll_success:
-            raise RuntimeError(f"9router poll failed after {max_poll_attempts} attempts - account created but not imported!")
+            if not poll_success:
+                raise RuntimeError(f"9router poll failed after {max_poll_attempts} attempts - account created but not imported!")
 
-        # Collect cookies (browser already closed, use empty list)
-        sso_cookies = []
+            # Collect cookies (browser already closed, use empty list)
+            sso_cookies = []
 
-        # Check if we have JWT token (skip - browser closed)
-        jwt_found = False
+            # Check if we have JWT token (skip - browser closed)
+            jwt_found = False
 
-        data = {
-            'email': addr,
-            'password': PASSWORD,
-            'code': code,
-            'sso_cookies': sso_cookies,
-            'final_url': '',
-            'timestamp': int(time.time()),
-        }
-
-        # Save to sso.txt (JSON lines)
-        OUT.parent.mkdir(parents=True, exist_ok=True)
-        with open(OUT, 'a') as f:
-            f.write(json.dumps(data) + '\n')
-        log_ok(f"saved → {OUT}")
-
-        # Save to ~/.grok/auth.json (Grok CLI format)
-        grok_dir = Path.home() / '.grok'
-        grok_auth = grok_dir / 'auth.json'
-        grok_dir.mkdir(parents=True, exist_ok=True)
-
-        # Extract JWT token from sso cookie (.x.ai domain)
-        jwt_token = None
-        for c in sso_cookies:
-            if c['name'] == 'sso' and '.x.ai' in c.get('domain', ''):
-                jwt_token = c['value']
-                break
-
-        # Load existing auth or create new
-        if grok_auth.exists():
-            try:
-                grok_data = json.loads(grok_auth.read_text())
-            except:
-                grok_data = {'accounts': []}
-        else:
-            grok_data = {'accounts': []}
-
-        # Add account (avoid duplicates)
-        existing_emails = {acc.get('email') for acc in grok_data.get('accounts', [])}
-        if addr not in existing_emails:
-            grok_data['accounts'].append({
+            data = {
                 'email': addr,
-                'token': jwt_token,
-            })
-            grok_auth.write_text(json.dumps(grok_data, indent=2))
-            log_ok(f"saved → {grok_auth}")
+                'password': PASSWORD,
+                'code': code,
+                'sso_cookies': sso_cookies,
+                'final_url': '',
+                'timestamp': int(time.time()),
+            }
 
-        mail.logout()
-        ctx.close()
+            # Save to sso.txt (JSON lines)
+            OUT.parent.mkdir(parents=True, exist_ok=True)
+            with open(OUT, 'a') as f:
+                f.write(json.dumps(data) + '\n')
+            log_ok(f"saved → {OUT}")
+
+            # Save to ~/.grok/auth.json (Grok CLI format)
+            grok_dir = Path.home() / '.grok'
+            grok_auth = grok_dir / 'auth.json'
+            grok_dir.mkdir(parents=True, exist_ok=True)
+
+            # Extract JWT token from sso cookie (.x.ai domain)
+            jwt_token = None
+            for c in sso_cookies:
+                if c['name'] == 'sso' and '.x.ai' in c.get('domain', ''):
+                    jwt_token = c['value']
+                    break
+
+            # Load existing auth or create new
+            if grok_auth.exists():
+                try:
+                    grok_data = json.loads(grok_auth.read_text())
+                except:
+                    grok_data = {'accounts': []}
+            else:
+                grok_data = {'accounts': []}
+
+            # Add account (avoid duplicates)
+            existing_emails = {acc.get('email') for acc in grok_data.get('accounts', [])}
+            if addr not in existing_emails:
+                grok_data['accounts'].append({
+                    'email': addr,
+                    'token': jwt_token,
+                })
+                grok_auth.write_text(json.dumps(grok_data, indent=2))
+                log_ok(f"saved → {grok_auth}")
+
+            mail.logout()
+            ctx.close()
 
         # Report proxy success
         if PROXY_POOL and proxy_server:
