@@ -7,49 +7,34 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 WORKDIR /app
 
-# Install Python dependencies first (includes playwright package)
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install system dependencies for Playwright Chrome
+# Install Chrome and dependencies for nodriver
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
+    gnupg \
+    ca-certificates \
+    && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
+    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+    google-chrome-stable \
     xvfb \
     xauth \
-    libnss3 \
-    libnspr4 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libdrm2 \
-    libdbus-1-3 \
-    libxkbcommon0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxrandr2 \
-    libgbm1 \
-    libasound2 \
-    libpango-1.0-0 \
-    libcairo2 \
-    libatspi2.0-0 \
     fonts-liberation \
     fonts-noto-color-emoji \
-    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Playwright Chrome (after pip install playwright)
-RUN python -m playwright install chrome \
-    && python -m playwright install-deps chrome
 
 # Copy application files
 COPY . .
 
-# Make entrypoint executable
-RUN chmod +x entrypoint.sh
+# Make entrypoint executable if exists
+RUN if [ -f entrypoint.sh ]; then chmod +x entrypoint.sh; fi
 
-# Use entrypoint that auto-starts Xvfb
-ENTRYPOINT ["./entrypoint.sh"]
+# Use entrypoint if exists, otherwise run script directly
+ENTRYPOINT ["sh", "-c", "if [ -f ./entrypoint.sh ]; then exec ./entrypoint.sh \"$@\"; else exec xvfb-run -a python grok-signup-nodriver-gmail.py \"$@\"; fi", "--"]
 
-# Default arguments (can be overridden in Dokploy)
+# Default arguments
 CMD ["--auto-add"]
