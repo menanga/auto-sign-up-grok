@@ -3,13 +3,12 @@ FROM python:3.11-slim
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONIOENCODING=utf-8 \
-    CHROME_BIN=/usr/bin/chromium
+    PYTHONIOENCODING=utf-8
 
-# system deps for Chromium, Xvfb, and Playwright
+# Install system dependencies: Chrome + Xvfb + Playwright deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    chromium \
-    chromium-common \
+    wget \
+    gnupg \
     xvfb \
     libnss3 \
     libatk1.0-0 \
@@ -27,18 +26,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-liberation \
     fonts-noto-color-emoji \
     ca-certificates \
+    && wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+    && apt-get install -y ./google-chrome-stable_current_amd64.deb \
+    && rm google-chrome-stable_current_amd64.deb \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright Chromium browser + runtime deps
-RUN playwright install chromium \
-    && playwright install-deps chromium
+# Install Playwright Chrome browser
+RUN playwright install chrome \
+    && playwright install-deps chrome
 
+# Copy application files
 COPY . .
 
-# Default: run forever, auto-add success accounts to 9router
-CMD ["xvfb-run", "-a", "python", "grok-signup-nodriver.py", "--auto-add"]
+# Default: run with Xvfb, auto-add to 9Router
+CMD ["xvfb-run", "-a", "python", "grok-signup-playwright-gmail.py", "--auto-add"]
