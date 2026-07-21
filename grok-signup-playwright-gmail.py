@@ -38,6 +38,20 @@ GMAIL_APP_PASSWORD = _env_or('GMAIL_APP_PASSWORD', '')
 GMAIL_DOMAINS = _env_or('GMAIL_DOMAINS', 'example.com').split(',')
 ROUTER9 = _env_or('ROUTER9_URL', 'https://your-9router.example')
 ROUTER9_PASS = _env_or('ROUTER9_PASS', 'change-me')
+
+# Proxy list
+PROXY_LIST_RAW = _env_or('PROXIES', '')
+PROXY_LIST = []
+if PROXY_LIST_RAW:
+    for line in PROXY_LIST_RAW.split(','):
+        line = line.strip()
+        if not line:
+            continue
+        # Extract IP:port from format like "129.222.204.27:10000 NG-N-S +"
+        match = re.match(r'^([\d\.]+:\d+)', line)
+        if match:
+            PROXY_LIST.append(match.group(1))
+
 # Auto-detect Chrome binary
 def _detect_chrome():
     candidates = [
@@ -268,14 +282,25 @@ def add_to_router_single(acc):
         log_no(f"9router API error: {e}")
         return False
 
+    # Pick random proxy
+    proxy_config = None
+    if PROXY_LIST:
+        proxy_server = random.choice(PROXY_LIST)
+        proxy_config = {'server': f'http://{proxy_server}'}
+        log_ok(f"using proxy: {proxy_server}")
+
     with sync_playwright() as p:
-        ctx = p.chromium.launch_persistent_context(
-            user_data_dir=f'/tmp/grok-router-{int(time.time()*1000)}-{random.randint(1000,9999)}',
-            headless=False,
-            no_viewport=True,
-            executable_path=CHROME_BIN,
-            args=['--no-sandbox','--disable-dev-shm-usage'],
-        )
+        launch_kwargs = {
+            'user_data_dir': f'/tmp/grok-router-{int(time.time()*1000)}-{random.randint(1000,9999)}',
+            'headless': False,
+            'no_viewport': True,
+            'executable_path': CHROME_BIN,
+            'args': ['--no-sandbox','--disable-dev-shm-usage'],
+        }
+        if proxy_config:
+            launch_kwargs['proxy'] = proxy_config
+
+        ctx = p.chromium.launch_persistent_context(**launch_kwargs)
         try:
             ctx.clear_cookies()
             cookies = acc.get('sso_cookies', [])
@@ -356,6 +381,13 @@ def signup_one(email_code_pair=None):
 
     ext_path = unlock_turnstile()
 
+    # Pick random proxy
+    proxy_config = None
+    if PROXY_LIST:
+        proxy_server = random.choice(PROXY_LIST)
+        proxy_config = {'server': f'http://{proxy_server}'}
+        log_ok(f"using proxy: {proxy_server}")
+
     with sync_playwright() as p:
         launch_args = {
             'user_data_dir': f'/tmp/grok-pw-{int(time.time()*1000)}-{random.randint(1000,9999)}',
@@ -372,6 +404,8 @@ def signup_one(email_code_pair=None):
         }
         if CHROME_BIN:
             launch_args['executable_path'] = CHROME_BIN
+        if proxy_config:
+            launch_args['proxy'] = proxy_config
 
         ctx = p.chromium.launch_persistent_context(**launch_args)
 
