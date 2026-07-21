@@ -573,7 +573,7 @@ def signup_one(email_code_pair=None):
                 code = None
             log_wait(addr)
 
-            page.locator('input[type=email]').fill(addr)
+            page.locator('input[type=email]').type(addr, delay=random.randint(50, 150))
             page.locator('input[type=email]').press('Enter')
 
             # Wait for OTP input, with fallback to click 'Sign up' button
@@ -592,7 +592,7 @@ def signup_one(email_code_pair=None):
             log_ok(f"OTP: {code}")
 
             code_input = page.locator('input[name=code]').first
-            code_input.fill(code, timeout=15000)
+            code_input.type(code, delay=random.randint(100, 200), timeout=15000)
             time.sleep(0.3)
             log_wait("submitting OTP...")
             page.keyboard.press('Enter')
@@ -604,9 +604,9 @@ def signup_one(email_code_pair=None):
             given = parts[0].capitalize()
             family = (parts[1] if len(parts) > 1 else 'Xyz').capitalize()
 
-            page.locator('input[name=givenName]').fill(given)
-            page.locator('input[name=familyName]').fill(family)
-            page.locator('input[name=password]').fill(PASSWORD)
+            page.locator('input[name=givenName]').type(given, delay=random.randint(80, 180))
+            page.locator('input[name=familyName]').type(family, delay=random.randint(80, 180))
+            page.locator('input[name=password]').type(PASSWORD, delay=random.randint(60, 120))
             log_ok("form filled")
 
             # Turnstile retry loop (max 3 attempts in same browser session)
