@@ -38,7 +38,28 @@ GMAIL_APP_PASSWORD = _env_or('GMAIL_APP_PASSWORD', '')
 GMAIL_DOMAINS = _env_or('GMAIL_DOMAINS', 'example.com').split(',')
 ROUTER9 = _env_or('ROUTER9_URL', 'https://your-9router.example')
 ROUTER9_PASS = _env_or('ROUTER9_PASS', 'change-me')
-CHROME_BIN = _env_or('CHROME_BIN', '/usr/bin/google-chrome')
+# Auto-detect Chrome binary
+def _detect_chrome():
+    candidates = [
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+        None,  # Let Playwright use bundled Chrome
+    ]
+    env_chrome = _env_or('CHROME_BIN', '')
+    if env_chrome:
+        return env_chrome
+
+    import shutil
+    for path in candidates:
+        if path is None:
+            return None
+        if shutil.which(path) or Path(path).exists():
+            return path
+    return None
+
+CHROME_BIN = _detect_chrome()
 TS_DIR = Path('turnstilePatch').resolve()
 SIGNUP = 'https://accounts.x.ai/sign-up?redirect=grok-com'
 OUT = Path('sso.txt')
@@ -336,20 +357,23 @@ def signup_one(email_code_pair=None):
     ext_path = unlock_turnstile()
 
     with sync_playwright() as p:
-        ctx = p.chromium.launch_persistent_context(
-            user_data_dir=f'/tmp/grok-pw-{int(time.time()*1000)}-{random.randint(1000,9999)}',
-            headless=False,
-            no_viewport=True,
-            executable_path=CHROME_BIN,
-            args=[
+        launch_args = {
+            'user_data_dir': f'/tmp/grok-pw-{int(time.time()*1000)}-{random.randint(1000,9999)}',
+            'headless': False,
+            'no_viewport': True,
+            'args': [
                 f'--disable-extensions-except={ext_path}',
                 f'--load-extension={ext_path}',
                 '--no-sandbox',
                 '--disable-dev-shm-usage',
                 '--disable-blink-features=AutomationControlled',
             ],
-            ignore_default_args=['--enable-automation'],
-        )
+            'ignore_default_args': ['--enable-automation'],
+        }
+        if CHROME_BIN:
+            launch_args['executable_path'] = CHROME_BIN
+
+        ctx = p.chromium.launch_persistent_context(**launch_args)
 
         page = ctx.new_page()
         page.goto(signup_url, wait_until='domcontentloaded', timeout=60000)
