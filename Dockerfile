@@ -5,15 +5,17 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONIOENCODING=utf-8
 
-# Install system dependencies first
+# Install system dependencies for Playwright Chrome
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
-    gnupg \
     xvfb \
     libnss3 \
+    libnspr4 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
     libcups2 \
+    libdrm2 \
+    libdbus-1-3 \
     libxkbcommon0 \
     libxcomposite1 \
     libxdamage1 \
@@ -21,18 +23,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrandr2 \
     libgbm1 \
     libasound2 \
-    libpangocairo-1.0-0 \
-    libgtk-3-0 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libatspi2.0-0 \
     fonts-liberation \
     fonts-noto-color-emoji \
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Google Chrome stable
-RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends --fix-broken ./google-chrome-stable_current_amd64.deb \
-    && rm google-chrome-stable_current_amd64.deb \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -41,7 +37,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright Chrome browser
+# Install Playwright Chrome (bundled, no system Chrome needed)
 RUN playwright install chrome \
     && playwright install-deps chrome
 
