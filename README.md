@@ -1,10 +1,10 @@
 <div align="center">
 
-# 🚀 Auto Sign-Up Grok Dezz
+# 🚀 Auto Sign-Up Grok + 9Router
 
-### Automated Grok (x.ai) Account Registration + 9Router Integration
+### Automated Grok (x.ai) Account Registration with OAuth Device Flow Integration
 
-**Playwright · Chrome · Xvfb · Turnstile Bypass · OAuth Device Flow**
+**Playwright · Gmail IMAP · Turnstile Bypass · Auto-Import to 9Router**
 
 ---
 
@@ -18,504 +18,561 @@
 
 ---
 
-## 📋 Daftar Isi
+## 📋 Table of Contents
 
-- [🤖 AI Setup Guide](#-ai-setup-guide)
-- [✨ Fitur](#-fitur)
-- [📦 Prasyarat](#-prasyarat)
-- [🔧 Install](#-install)
-- [⚙️ Konfigurasi](#️-konfigurasi)
-- [🎯 Penggunaan](#-penggunaan)
+- [✨ Features](#-features)
+- [📦 Prerequisites](#-prerequisites)
+- [🔧 Installation](#-installation)
+- [⚙️ Configuration](#️-configuration)
+  - [Gmail IMAP Setup](#gmail-imap-setup)
+  - [9Router Setup](#9router-setup)
+- [🎯 Usage](#-usage)
 - [📁 Output](#-output)
 - [🔄 Flow](#-flow)
-- [🖥️ Tampilan UI](#️-tampilan-ui)
+- [🖥️ UI Preview](#️-ui-preview)
 - [🚨 Troubleshooting](#-troubleshooting)
 - [📝 Notes](#-notes)
 
 ---
 
-## 🤖 AI Setup Guide
+## ✨ Features
 
-> **Bagian ini khusus untuk AI assistant (Claude, GPT, Cursor, dll).**
-> Jika user minta bantuan setup project ini, ikuti panduan di bawah. User tidak perlu tanya-tanya ke author.
-
-### Tugas AI: Setup end-to-end untuk user
-
-Ikuti langkah-langkah berurutan. Setiap langkah ada verifikasi. Kalau ada yang gagal, AI harus bisa diagnose + fix otomatis sebelum lapor ke user.
-
-#### 1. Detect Environment
-
-```bash
-# Cek OS
-uname -m              # x86_64 / aarch64 (Linux/macOS)
-cat /etc/os-release   # distro (Linux)
-
-# Windows PowerShell:
-# $env:OS              # Windows_NT
-# [System.Environment]::OSVersion
-
-# Cek tools (Linux/macOS)
-python3 --version     # butuh 3.11+
-google-chrome --version 2>/dev/null || google-chrome-stable --version 2>/dev/null
-which xvfb-run || echo "XVFB_MISSING"
-git --version
-
-# Windows (PowerShell)
-python --version      # butuh 3.11+
-& "C:\Program Files\Google\Chrome\Application\chrome.exe" --version
-git --version
-```
-
-**Diagnose AI:**
-- Python < 3.11 → install: `sudo apt install python3.11 python3.11-venv` (Ubuntu) atau pakai pyenv. Windows: install dari python.org.
-- Chrome missing (Linux) → install: `wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && sudo dpkg -i google-chrome-stable_current_amd64.deb && sudo apt -f install -y`
-- Chrome missing (Windows) → install dari https://www.google.com/chrome/
-- Xvfb missing → `sudo apt install -y xvfb` (Linux only — Windows gak perlu)
-
-#### 2. Clone + Venv
-
-```bash
-git clone https://github.com/dzDev3/Auto-sign-up-grok-dezz.git
-cd Auto-sign-up-grok-dezz
-
-# Linux/macOS
-python3 -m venv .venv
-.venv/bin/pip install --upgrade pip
-.venv/bin/pip install playwright curl_cffi
-.venv/bin/playwright install chrome
-
-# Windows (PowerShell)
-python -m venv .venv
-.venv\Scripts\pip install --upgrade pip
-.venv\Scripts\pip install playwright curl_cffi
-.venv\Scripts\playwright install chrome
-```
-
-**Verifikasi:**
-```bash
-# Linux/macOS
-.venv/bin/python -c "import playwright; import curl_cffi; print('deps OK')"
-# Windows
-.venv\Scripts\python -c "import playwright; import curl_cffi; print('deps OK')"
-```
-
-#### 3. Config `.env`
-
-```bash
-cp .env.example .env
-```
-
-AI harus tanya user 3 hal ini (wajib), lalu tulis ke `.env`:
-
-| Field | Tanya ke user | Contoh |
-|-------|---------------|--------|
-| `MAILLDEZ_URL` | "URL temp mail API Anda? (MAILLDEZ-compatible: GET /api/session, POST /api/inboxes, GET /api/inboxes/{addr}/messages)" | `https://mail.example.com` |
-| `MAILLDEZ_DOMAINS` | "Domain temp mail Anda? (comma-separated)" | `domain1.com,domain2.com` |
-| `PASSWORD` | "Password untuk akun Grok yang akan dibuat? Min 16 char, campur huruf+angka+simbol" | `MyStrongPass123!@` |
-
-**Opsional** (kalau user punya 9Router):
-- `ROUTER9_URL` + `ROUTER9_PASS` — kalau user mau auto-add akun ke 9Router
-
-**Validasi `.env`:**
-```bash
-# AI: pastikan tidak ada placeholder "your-" atau "change-me" di MAILLDEZ_URL, MAILLDEZ_DOMAINS, PASSWORD
-grep -E "your-|change-me|example\.com" .env && echo "INCOMPLETE_CONFIG" || echo "CONFIG_OK"
-```
-
-#### 4. Test Turnstile Patch
-
-```bash
-.venv/bin/python -c "
-from grok_signup import unlock_turnstile
-ext_path = unlock_turnstile()
-print('TURNSTILE_OK' if ext_path else 'TURNSTILE_FAIL')
-"
-```
-
-**Kalau gagal:**
-- `TURNSTILE_FAIL` → file `turnstilePatch/script.js` atau `manifest.json` gak ada. Cek: `ls turnstilePatch/`
-
-#### 5. Test Temp Mail
-
-```bash
-.venv/bin/python -c "
-import curl_cffi.requests as creq, json
-url = open('.env').read()
-mail_url = [l.split('=',1)[1].strip() for l in url.splitlines() if l.startswith('MAILLDEZ_URL=')][0]
-domains = [l.split('=',1)[1].strip() for l in url.splitlines() if l.startswith('MAILLDEZ_DOMAINS=')][0].split(',')
-r = creq.get(f'{mail_url}/api/session', timeout=10)
-print('session:', r.status_code)
-sid = r.json().get('sessionId','')
-r2 = creq.post(f'{mail_url}/api/inboxes', json={'domain': domains[0]}, headers={'x-session-id': sid}, timeout=10)
-print('inbox:', r2.status_code, r2.json().get('address',''))
-print('MAIL_OK' if r2.status_code == 200 else 'MAIL_FAIL')
-"
-```
-
-**Kalau gagal:**
-- `session: 000` → URL salah / API down. AI cek: `curl -v $MAILLDEZ_URL/api/session`
-- `MAIL_FAIL` → domain tidak valid atau API reject. AI coba domain lain dari list.
-
-#### 6. Run Test (1 akun)
-
-```bash
-# Linux (wajib xvfb — headless deteksi bot)
-xvfb-run -a .venv/bin/python grok-signup.py 1
-
-# Windows (gak butuh xvfb — ada display asli)
-.venv\Scripts\python grok-signup.py 1
-```
-
-**Verifikasi sukses:**
-- Output: `[09] done SUCCESS`
-- File `sso.txt` muncul dengan 1 entry
-
-**Kalau gagal, AI diagnose:**
-
-| Error | Penyebab | Fix AI |
-|-------|----------|--------|
-| `turnstile load: missing` | File patch gak ada | Cek `ls turnstilePatch/` (script.js + manifest.json) |
-| `Password too weak` | PASSWORD < 16 char | Edit `.env`, buat password 16+ char |
-| `OTP gak masuk 120s` | Temp mail API bermasalah | Ulang langkah 5, cek domain |
-| `Turnstile gak solved 40s` | Extension gak load / platform mismatch | Cek `turnstilePatch/script.js` + `manifest.json` ada. Windows: pastikan Chrome (bukan Chromium) |
-| `Cloudflare Attention Required` | IP diblok / headless | Linux: pastikan pakai `xvfb-run`. Windows: jangan pakai `--headless` |
-| `ctx undefined` / scope error | Script bug | Lapor ke author dengan full traceback |
-| `Execution context destroyed` | Navigasi saat evaluate | Normal, script sudah handle |
-
-#### 7. Selesai
-
-```bash
-# Cek hasil
-wc -l sso.txt
-grep -oE '"email": "[^"]+"' sso.txt | wc -l
-```
+| Feature | Status |
+|---------|--------|
+| 🤖 Auto-register Grok (x.ai) accounts | ✅ |
+| 📧 Gmail IMAP integration (alias support) | ✅ |
+| 🔢 Auto OTP verification + email deletion | ✅ |
+| 🛡️ Turnstile bypass (extension-based) | ✅ |
+| 🔄 In-browser turnstile retry (3 attempts) | ✅ |
+| 🔐 OAuth device flow integration | ✅ |
+| 🔗 Auto-import to 9Router with guaranteed retry | ✅ |
+| 📊 Batch registration with beautiful logging | ✅ |
+| ♻️ Infinite mode support | ✅ |
+| 📈 Real-time import counter | ✅ |
 
 ---
 
-### Quick Reference untuk AI
+## 📦 Prerequisites
 
-```
-Repo:        github.com/dzDev3/Auto-sign-up-grok-dezz
-Script:      grok-signup.py
-Config:      .env (dari .env.example)
-Output:      sso.txt (JSON lines)
-
-Run (Linux):   xvfb-run -a .venv/bin/python grok-signup.py <count>
-Run (Windows): .venv\Scripts\python grok-signup.py <count>
-Add router:    sama saja + --router [N]
-
-Turnstile:   AUTO (plaintext patch, load as Chrome extension)
-Temp mail:   USER-PROVIDED (MAILLDEZ-compatible API)
-9Router:     OPTIONAL (user-provided)
-
-Yang user HARUS sediakan:
-  1. Temp mail API (MAILLDEZ-compatible)
-  2. Password untuk akun Grok (min 16 char)
-  3. Chrome + Python 3.11+ (Linux: +Xvfb)
-
-Yang user TIDAK perlu:
-  - Turnstile patch (plaintext, included)
-  - Author intervention
-```
-
----
-
-## ✨ Fitur
-
-| Fitur | Status |
-|-------|--------|
-| 🤖 Auto-register akun Grok (x.ai) | ✅ |
-| 📧 Temp mail integration (MAILLDEZ) | ✅ |
-| 🔢 Auto OTP verification | ✅ |
-| 🛡️ Turnstile bypass (Chrome extension) | ✅ |
-| 🎲 Domain rotation (round-robin) | ✅ |
-| 🔐 SSO cookies save | ✅ |
-| 🔗 9Router OAuth device flow integration | ✅ |
-| 📊 Dashboard UI (progress bar, logs, stats) | ✅ |
-| 📦 Batch registration | ✅ |
-| ♻️ Add existing accounts to 9Router | ✅ |
-
----
-
-## 📦 Prasyarat
-
-| Tool | Versi | Cek |
-|------|-------|-----|
+| Tool | Version | Check |
+|------|---------|-------|
 | Python | 3.11+ | `python3 --version` |
 | Google Chrome | Stable | `google-chrome --version` |
-| Xvfb | any | `sudo apt install xvfb` |
 | Git | any | `git --version` |
 
-> ⚠️ **Headless mode tidak support** — x.ai mendeteksi bot. Pakai Xvfb virtual display.
+### System Requirements
+
+- **OS**: Linux (Ubuntu 20.04+, Debian 11+) or WSL2
+- **RAM**: 2GB minimum (4GB recommended for batch processing)
+- **Network**: Stable internet connection
+- **Gmail Account**: With IMAP enabled + App Password generated
 
 ---
 
-## 🔧 Install
+## 🔧 Installation
+
+### 1. Clone Repository
 
 ```bash
 git clone https://github.com/dzDev3/Auto-sign-up-grok-dezz.git
 cd Auto-sign-up-grok-dezz
+```
 
-# Virtual environment + dependencies
+### 2. Install System Dependencies
+
+#### Ubuntu/Debian
+```bash
+sudo apt update
+sudo apt install -y python3.11 python3.11-venv google-chrome-stable
+```
+
+#### Fedora/RHEL
+```bash
+sudo dnf install -y python3.11 google-chrome-stable
+```
+
+### 3. Setup Python Virtual Environment
+
+```bash
 python3 -m venv .venv
-.venv/bin/pip install playwright curl_cffi
+source .venv/bin/activate  # or `.venv/bin/activate` on Linux
+```
 
-# Install Chrome untuk Playwright
-.venv/bin/playwright install chrome
+### 4. Install Python Dependencies
+
+```bash
+pip install --upgrade pip
+pip install playwright curl_cffi python-dotenv
+playwright install chrome
+```
+
+### 5. Verify Installation
+
+```bash
+python -c "import playwright; import curl_cffi; print('✓ Dependencies OK')"
+ls turnstilePatch/  # Should show: manifest.json  script.js
 ```
 
 ---
 
-## ⚙️ Konfigurasi
+## ⚙️ Configuration
+
+### 1. Create Configuration File
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
+### 2. Edit `.env`
 
 ```ini
-# ── 9Router ──────────────────────────────────
+# ── 9Router API ──────────────────────────────────
 ROUTER9_URL=https://your-9router.example
 ROUTER9_PASS=your_9router_password
 
-# ── Temp Mail (MAILLDEZ-compatible) ──────────
-# API: GET /api/session, POST /api/inboxes {domain}, GET /api/inboxes/{addr}/messages
-MAILLDEZ_URL=https://your-mail-api.example
-MAILLDEZ_DOMAINS=domain1.com,domain2.com,domain3.com
+# ── Gmail IMAP (for OTP verification) ────────────
+# Use App Password, NOT regular Gmail password
+# Enable IMAP in Gmail settings first
+GMAIL_USER=yourgmail@gmail.com
+GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx
+GMAIL_DOMAINS=youralias1.com,youralias2.com,gmail.com
 
-# ── Akun Grok ────────────────────────────────────
-# Min 16 char — x.ai reject password pendek
-PASSWORD=YourStrongPassword123
+# ── Chrome Binary ─────────────────────────────────
+CHROME_BIN=/usr/bin/google-chrome
+
+# ── Grok Account ──────────────────────────────────
+# Min 16 characters — x.ai rejects weak passwords
+PASSWORD=YourStrongPassword123!@#
+
+# ── Runner Config ─────────────────────────────────
+MAX_ACCOUNTS=0          # 0 = infinite loop
+BATCH_SIZE=1            # Accounts per batch
+PAUSE_SECONDS=10        # Delay between batches
+DELAY_SECONDS=5         # Delay between accounts
+MAX_ACCOUNT_RETRIES=3   # Max retries per account
+AUTO_ADD=true           # Auto-import to 9Router
 ```
 
 ---
 
-## 🎯 Penggunaan
+## Gmail IMAP Setup
 
-### Register Akun Baru
+### Step 1: Enable IMAP in Gmail
 
-```bash
-# Register 1 akun
-xvfb-run -a .venv/bin/python grok-signup.py 1
+1. Open Gmail → Click **Settings** (gear icon) → **See all settings**
+2. Go to **Forwarding and POP/IMAP** tab
+3. Under **IMAP access**, select **Enable IMAP**
+4. Click **Save Changes**
 
-# Register batch 10 akun
-xvfb-run -a .venv/bin/python grok-signup.py 10
+### Step 2: Generate App Password
+
+1. Go to [Google Account Security](https://myaccount.google.com/security)
+2. Enable **2-Step Verification** (required for App Passwords)
+3. Go to [App Passwords](https://myaccount.google.com/apppasswords)
+4. Select **Mail** and **Other (Custom name)** → Enter "Grok Signup"
+5. Click **Generate**
+6. Copy the 16-character password (format: `xxxx xxxx xxxx xxxx`)
+
+### Step 3: Update `.env`
+
+```ini
+GMAIL_USER=yourgmail@gmail.com
+GMAIL_APP_PASSWORD=abcd efgh ijkl mnop  # Paste the 16-char App Password
 ```
 
-> Setelah selesai, muncul prompt:
-> ```
-> ? Add 10 akun ke 9router? [y/N]
-> ```
-> Ketik `y` untuk auto-add ke 9Router, atau `N` untuk skip.
+### Step 4: Configure Alias Domains
 
-### Add Akun Existing ke 9Router
+Gmail supports `+` aliases and custom domain aliases:
 
-```bash
-# Add semua akun dari sso.txt
-xvfb-run -a .venv/bin/python grok-signup.py --router
+```ini
+# Option 1: Gmail + aliases (built-in)
+GMAIL_DOMAINS=gmail.com
 
-# Add 10 akun terakhir saja
-xvfb-run -a .venv/bin/python grok-signup.py --router 10
+# Option 2: Custom domain aliases (if you own domains)
+GMAIL_DOMAINS=yourdomain1.com,yourdomain2.com,gmail.com
 ```
 
-> Akun yang sudah ada di 9Router otomatis di-skip (no duplicates).
+**How it works:**
+- Script generates random email like `abcde.fghij.1234@yourdomain.com`
+- Gmail receives at your main address
+- OTP extracted, email deleted automatically
+
+---
+
+## 9Router Setup
+
+### Prerequisites
+
+- 9Router instance running at `ROUTER9_URL`
+- Admin password for API access
+
+### API Endpoints Used
+
+```
+POST /api/auth/login           → Authenticate
+GET  /api/oauth/grok-cli/device-code → Get OAuth device code
+POST /api/oauth/grok-cli/poll        → Poll for completion
+GET  /api/providers                   → List existing accounts
+```
+
+### Configuration
+
+```ini
+ROUTER9_URL=https://xapi.your-domain.com
+ROUTER9_PASS=your_admin_password
+```
+
+### Test 9Router Connection
+
+```bash
+curl -X POST https://xapi.your-domain.com/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"password":"your_admin_password"}'
+```
+
+Expected response:
+```json
+{"success": true}
+```
+
+---
+
+## 🎯 Usage
+
+### Basic Usage
+
+```bash
+# Activate virtual environment
+source .venv/bin/activate
+
+# Run with auto-import to 9Router
+python grok-signup-playwright-gmail.py --auto-add
+```
+
+### Advanced Usage
+
+```bash
+# Infinite mode (MAX_ACCOUNTS=0 in .env)
+python grok-signup-playwright-gmail.py --auto-add
+
+# Custom batch size (via .env)
+# Edit .env: BATCH_SIZE=5
+python grok-signup-playwright-gmail.py --auto-add
+
+# Fast mode (reduce delays via .env)
+# Edit .env: PAUSE_SECONDS=5, DELAY_SECONDS=2
+python grok-signup-playwright-gmail.py --auto-add
+```
+
+### What Happens During Execution
+
+1. **Login to 9Router** → Get auth token
+2. **Request device code** → Generates OAuth URL with user_code
+3. **Open browser** → Navigate to signup URL with OAuth redirect
+4. **Generate Gmail alias** → Random email like `xxxxx.yyyyy.zzzz@domain.com`
+5. **Submit email** → Wait for OTP input
+6. **Poll Gmail IMAP** → Extract OTP from email subject/body
+7. **Delete OTP email** → Clean up inbox
+8. **Submit OTP** → Verify code
+9. **Fill profile form** → Auto-generate name from email
+10. **Solve Turnstile** → Extension bypasses challenge (10s timeout, 3 retries)
+11. **Submit signup** → Auto-redirect to OAuth approval page
+12. **Click Continue/Allow** → Authorize Grok Build access
+13. **Close browser** → Free resources
+14. **Poll 9Router API** → Import account (20 retries, guaranteed delivery)
+15. **Save to files** → `sso.txt` + `~/.grok/auth.json`
 
 ---
 
 ## 📁 Output
 
-`sso.txt` — JSON lines format, 1 baris per akun:
+### `sso.txt` — JSON Lines Format
 
 ```json
 {
-  "email": "user@domain.com",
-  "password": "YourStrongPassword123",
+  "email": "xxxxx.yyyyy.zzzz@domain.com",
+  "password": "YourStrongPassword123!@#",
   "code": "ABC123",
-  "sso_cookies": [{"name": "sso", "value": "...", "domain": ".x.ai"}],
-  "final_url": "https://grok.com/",
-  "timestamp": 1720000000
+  "sso_cookies": [],
+  "final_url": "",
+  "timestamp": 1721535200
 }
 ```
 
-Cek hasil:
+### `~/.grok/auth.json` — Grok CLI Format
+
+```json
+{
+  "accounts": [
+    {
+      "email": "xxxxx.yyyyy.zzzz@domain.com",
+      "token": null
+    }
+  ]
+}
+```
+
+### Check Results
 
 ```bash
-# Total akun
+# Total accounts created
 wc -l sso.txt
 
+# Extract email list
+grep -oE '"email": "[^"]+"' sso.txt | sed 's/"email": "//;s/"//' | sort
+
 # Domain breakdown
-grep -oE '"email": "[^"]+@[^"]+"' sso.txt | grep -oE '@[^"]+' | sort | uniq -c | sort -rn
+grep -oE '@[^"]+' sso.txt | sort | uniq -c | sort -rn
 ```
 
 ---
 
 ## 🔄 Flow
 
-### Register Flow
+### Complete Registration + Import Flow
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  1. Buka accounts.x.ai/sign-up                      │
-│           ↓                                          │
-│  2. Create temp email (MAILLDEZ API)                │
-│     Domain di-rotate round-robin                    │
-│           ↓                                          │
-│  3. Isi email → Enter → tunggu OTP                  │
-│           ↓                                          │
-│  4. Polling MAILLDEZ → extract OTP dari subject     │
-│           ↓                                          │
-│  5. Isi OTP → Enter → halaman nama + password       │
-│           ↓                                          │
-│  6. Isi givenName + familyName + password           │
-│           ↓                                          │
-│  7. Solve Turnstile (turnstilePatch extension)      │
-│           ↓                                          │
-│  8. Submit → redirect ke grok.com                   │
-│           ↓                                          │
-│  9. Save SSO cookies → sso.txt                      │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  1. Login 9Router → Extract auth_token from Set-Cookie          │
+│           ↓                                                       │
+│  2. GET /device-code → device_code, codeVerifier, user_code     │
+│           ↓                                                       │
+│  3. Build signup URL with OAuth redirect:                        │
+│     https://accounts.x.ai/sign-up?redirect=oauth2-provider       │
+│     &return_to=/oauth2/device?user_code=XXXX-XXXX               │
+│           ↓                                                       │
+│  4. Open browser → Navigate to signup URL                        │
+│           ↓                                                       │
+│  5. Accept cookies → Click "Sign up with email"                 │
+│           ↓                                                       │
+│  6. Generate Gmail alias → Fill email → Submit                   │
+│           ↓                                                       │
+│  7. Poll Gmail IMAP (120s timeout)                              │
+│     - Extract OTP from Subject or Body                           │
+│     - Delete email after extraction                              │
+│           ↓                                                       │
+│  8. Submit OTP → Wait for profile form                          │
+│           ↓                                                       │
+│  9. Auto-fill givenName, familyName, password                   │
+│           ↓                                                       │
+│ 10. Solve Turnstile (10s, max 3 retries)                        │
+│     - If timeout: Click "Go back"                                │
+│     - Re-input email → Get fresh OTP → Retry                    │
+│           ↓                                                       │
+│ 11. Submit "Complete sign up"                                    │
+│           ↓                                                       │
+│ 12. Auto-redirect to OAuth approval page                         │
+│     (URL contains user_code from step 2)                        │
+│           ↓                                                       │
+│ 13. Accept cookies (if banner appears)                          │
+│           ↓                                                       │
+│ 14. Click "Continue" → Click "Allow"                            │
+│           ↓                                                       │
+│ 15. Close browser immediately                                    │
+│           ↓                                                       │
+│ 16. Poll 9Router /poll API (20 retries × 5s = 100s max)        │
+│     - Retry on network errors                                    │
+│     - Retry on non-pending errors                               │
+│     - Guaranteed delivery after account creation                │
+│           ↓                                                       │
+│ 17. Save to sso.txt + ~/.grok/auth.json                         │
+│           ↓                                                       │
+│ 18. Display batch summary + total imported counter              │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### 9Router Integration Flow
+### Turnstile Retry Mechanism
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  1. Login 9Router (POST /api/auth/login)            │
-│           ↓                                          │
-│  2. Cek existing providers (skip duplicates)        │
-│           ↓                                          │
-│  3. Inject SSO cookies ke browser context            │
-│           ↓                                          │
-│  4. GET device-code → user_code + verify URL       │
-│           ↓                                          │
-│  5. Buka verify URL → klik [Continue]               │
-│           ↓                                          │
-│  6. Consent page → klik [Allow]                     │
-│           ↓                                          │
-│  7. Poll 9Router sampai success: true               │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│  Attempt 1: Wait 10s for Turnstile token        │
+│             ↓                                     │
+│         Success? → Continue                      │
+│             ↓ Fail                               │
+│  Click "Go back" → Re-input same email          │
+│             ↓                                     │
+│  Clear seen IDs → Poll Gmail for fresh OTP      │
+│             ↓                                     │
+│  Submit new OTP → Re-fill form                  │
+│             ↓                                     │
+│  Attempt 2: Wait 10s for Turnstile token        │
+│             ↓                                     │
+│         Success? → Continue                      │
+│             ↓ Fail                               │
+│  Repeat (max 3 attempts)                        │
+│             ↓                                     │
+│  All failed? → Raise error                      │
+└─────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🖥️ Tampilan UI
+## 🖥️ UI Preview
 
-### Live Demo — Batch 8
-
-![8 akun SUCCESS + 9Router add 8/8](assets/ui-demo.jpg)
-
-### Live Demo — Batch 500 (470/470 added to 9Router)
-
-![Batch 500 — 94% health, 470 akun ke 9Router](assets/ui-batch500.jpg)
-
-### ASCII Preview
+### Beautiful Logging Output
 
 ```
- ─── [ GROK SIGNUP RUNNER ] ──────────────────────────────────
-  [●] Running: 0/5 Queue  |  [✓] 0 SUCCESS  |  [×] 0 FAILED  |  0.0s
- ──────────────────────────────────────────────────────────────────────
+╔════════════════════════════════════════════════════════════════════╗
+║ GROK SIGNUP + 9ROUTER AUTO-IMPORT                                  ║
+╠════════════════════════════════════════════════════════════════════╣
+║ Mode: INFINITE
+║ Batch Size: 1
+║ Chrome: /usr/bin/google-chrome
+║ Auto-Import: YES
+╚════════════════════════════════════════════════════════════════════╝
 
-  [01] Open x.ai signup
-    ✓ page loaded
+┌─ BATCH #1 ──────────────────────────────────────────────────────
+│ [1] Starting account creation...
+  ✓ device code: DKZW-KPKD
+  ✓ signup URL: https://accounts.x.ai/sign-up?redirect=oauth2-provider&return_to=%2Foauth2%2Fdevice%3Fuser_code%3DDKZW-KPKD
+  ✓ page loaded
+  ✓ email form
+  → abcde.fghij.1234@yourdomain.com
+  ✓ email submitted
+  → found 1 emails for abcde.fghij.1234@yourdomain.com
+  → Email: From=SpaceXAI <noreply@x.ai>, Subject=Your verification code is ABC123
+  ✓ Extracted OTP: ABC123 from SUBJECT
+  ✓ deleted OTP email
+  ✓ OTP: ABC123
+  ✓ OTP verified
+  ✓ form filled
+  → solving turnstile (attempt 1/3)...
+  ✓ turnstile solved
+  ✓ submitted
+  → waiting for OAuth page...
+  ✓ OAuth page loaded
+  ✓ accepted cookies
+  ✓ clicked Continue
+  ✓ clicked Allow
+  ✓ closing browser...
+  → polling 9router (guaranteed retry)...
+  ✓ 9router import success (attempt 1/20)
+  ✓ saved → sso.txt
+  ✓ saved → /home/user/.grok/auth.json
+│ ✓ [1] abcde.fghij.1234@yourdomain.com → imported in 42.3s
+└──────────────────────────────────────────────────────────────────
 
-  [02] Sign up with email
-    ✓ email form
+■ Batch Summary:
+  ├─ Imported: 1/1
+  ├─ Failed: 0
+  └─ Total Imported (all batches): 1
 
-  [03] Create temp email
-    → user@domain.com
-    ✓ email submitted
+■ Overall Stats:
+  ├─ Total Attempts: 1
+  ├─ Successful: 1
+  ├─ Failed: 0
+  └─ Success Rate: 100%
 
-  [04] Wait for OTP
-    ⠹ waiting OTP 3s
-    ✓ OTP: X43A4D
+→ Sleeping 10s before next batch...
+```
 
-  [05] Submit OTP
-    ✓ verified
+### Final Report
 
-  [06] Fill name & password
-    → John Doe
-    ✓ form filled
-
-  [07] Solve turnstile & submit
-    ✓ turnstile solved
-    submitting ■■■■■■□□
-    ✓ submitted
-
-  [08] Redirect → grok.com
-    ✓ → https://grok.com/
-
-  [09] Save credentials
-    ✓ saved → sso.txt
- ──────────────────────────────────────────────────────────────────────
-  1   user@domain.com  [09] done  SUCCESS 17.5s
- ──────────────────────────────────────────────────────────────────────
-
- ┌── [ SYSTEM LOGS ] ───────────────────────────────────────────
- │ DONE   [001] user@domain.com → grok.com (17.5s)
- └────────────────────────────────────────────────────────────────────
-
- [ Diagnostics ]───────────────────────────────────────────────
-  Health 100.0%  |  Speed 3.0/m  |  Errors 0
-  TOTAL [■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■] 5/5 100%
+```
+╔════════════════════════════════════════════════════════════════════╗
+║ FINAL REPORT                                                        ║
+╠════════════════════════════════════════════════════════════════════╣
+║ Total Imported to 9router: 42
+║ Success: 42  |  Failed: 3  |  Total: 45
+╚════════════════════════════════════════════════════════════════════╝
 ```
 
 ---
 
 ## 🚨 Troubleshooting
 
-<details>
-<summary><b>🔐 "OTP gak masuk 120s"</b></summary>
+### 🔐 "OTP timeout 120s"
 
-- Cek `MAILLDEZ_URL` + `MAILLDEZ_DOMAINS` di `.env`
-- Test API: `curl https://your-mail-api.example/api/session`
-- Pastikan domain di `.env` resolve di DNS
+**Cause:** Gmail IMAP not receiving emails or wrong credentials
 
-</details>
+**Fix:**
+```bash
+# Test Gmail IMAP connection
+python3 << 'EOF'
+import imaplib
+mail = imaplib.IMAP4_SSL('imap.gmail.com')
+mail.login('yourgmail@gmail.com', 'your_app_password')
+mail.select('inbox')
+print("✓ IMAP connection OK")
+mail.logout()
+EOF
+```
 
-<details>
-<summary><b>🛡️ "Turnstile gak solved 40s"</b></summary>
+- Verify `GMAIL_USER` and `GMAIL_APP_PASSWORD` in `.env`
+- Check IMAP is enabled in Gmail settings
+- Regenerate App Password if needed
+- Check Gmail quota (not over storage limit)
 
-- Pastikan folder `turnstilePatch/` ada di direktori yang sama
-- Chrome extension butuh `--load-extension` (auto di script)
-- Restart browser context kalau extension gak load
+### 🛡️ "Turnstile failed after 3 attempts"
 
-</details>
+**Cause:** Extension not loaded or browser automation detected
 
-<details>
-<summary><b>🔑 "SSO expired, need login"</b></summary>
+**Fix:**
+- Verify `turnstilePatch/` folder exists with `script.js` and `manifest.json`
+- Check Chrome version: `google-chrome --version` (must be stable, not Chromium)
+- Restart script (Turnstile difficulty varies)
+- Reduce `BATCH_SIZE` to 1 (reduces detection)
 
-- Cookies SSO expired (x.ai session timeout)
-- Re-register akun baru atau login manual untuk refresh SSO
-- SSO cookies lifespan ±6 jam
+### 🔗 "9router login failed"
 
-</details>
+**Cause:** Wrong URL or password
 
-<details>
-<summary><b>🔒 "Password too weak"</b></summary>
+**Fix:**
+```bash
+# Test 9Router API
+curl -X POST $ROUTER9_URL/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"password":"your_password"}' \
+  -v
+```
 
-- x.ai reject password < 16 karakter
-- Update `PASSWORD` di `.env`
-- Format: huruf besar + kecil + angka + simbol (min 16 char)
+- Check `ROUTER9_URL` format (https://domain.com, no trailing slash)
+- Verify `ROUTER9_PASS` is correct
+- Check 9Router service is running
 
-</details>
+### 🚫 "curl timeout after 60s"
 
-<details>
-<summary><b>☁️ "Cloudflare Attention Required"</b></summary>
+**Cause:** Network issue or 9Router API overloaded
 
-- IP server di-block Cloudflare x.ai
-- Jangan pakai proxy (WARP/SG exit di-block)
-- Headless deteksi bot — wajib pakai Xvfb (`xvfb-run -a`)
+**Fix:**
+- Script auto-retries 20 times with 5s interval
+- Check 9Router logs for errors
+- Verify network connectivity: `ping xapi.your-domain.com`
+- Increase timeout if needed (already set to 60s)
 
-</details>
+### 📧 "Gmail IMAP: [AUTHENTICATIONFAILED]"
 
-<details>
-<summary><b>🔗 "9Router login failed"</b></summary>
+**Cause:** Wrong App Password or IMAP disabled
 
-- Cek `ROUTER9_URL` + `ROUTER9_PASS` di `.env`
-- Test login: `curl -X POST $ROUTER9_URL/api/auth/login -d '{"password":"..."}'`
+**Fix:**
+1. Regenerate App Password at https://myaccount.google.com/apppasswords
+2. Enable IMAP in Gmail Settings → Forwarding and POP/IMAP
+3. Use App Password (16 chars), NOT regular Gmail password
+4. Remove spaces from App Password in `.env`
 
-</details>
+### 🔒 "Password too weak"
+
+**Cause:** Password < 16 characters
+
+**Fix:**
+```ini
+# Update .env with strong password
+PASSWORD=MyStrongPassword123!@#$
+```
+
+- Min 16 characters
+- Mix: uppercase + lowercase + numbers + symbols
+- x.ai enforces strong password policy
+
+### ⚠️ "Account created but not imported"
+
+**Cause:** Poll timeout or network error after signup
+
+**Fix:**
+- Account IS created and saved in `sso.txt`
+- Manually import: Check 9Router logs for device_code
+- Re-run script will create new account (old one saved)
+- Script guarantees 20 retry attempts (100s total)
 
 ---
 
@@ -523,17 +580,41 @@ grep -oE '"email": "[^"]+@[^"]+"' sso.txt | grep -oE '@[^"]+' | sort | uniq -c |
 
 | Item | Detail |
 |------|--------|
-| ⏱️ Speed | ±17-20 detik per akun (tanpa proxy) |
-| 🎲 Domain | Rotasi round-robin biar gak kena rate-limit |
-| 📝 sso.txt | Append mode — gak overwrite, bisa run berkali-kali |
-| 🌐 Chrome | `channel='chrome'` (bukan chromium) — butuh Google Chrome stable |
-| 🖥️ Display | Xvfb wajib — headless deteksi bot |
-| 🚫 Proxy | Jangan pakai — WARP/SG exit di-block Cloudflare |
+| ⏱️ Speed | ~40-50s per account (signup + OAuth + import) |
+| 📧 Gmail Alias | Supports `+` alias and custom domain forwarding |
+| 🔄 OTP Email | Auto-deleted after extraction (keeps inbox clean) |
+| 🛡️ Turnstile | 10s timeout × 3 retries = 30s max, with in-browser retry |
+| 🔗 9Router | Guaranteed import with 20 retries (100s timeout) |
+| 📝 Output | `sso.txt` (append mode) + `~/.grok/auth.json` (Grok CLI format) |
+| 🚀 Batch Mode | Configurable via `BATCH_SIZE`, `PAUSE_SECONDS`, `DELAY_SECONDS` |
+| ♻️ Infinite Loop | Set `MAX_ACCOUNTS=0` for continuous registration |
+| 📊 Counter | Real-time total imported count after each batch |
+| 🌐 Chrome | Google Chrome stable (not Chromium) — required for extension |
+
+---
+
+## 🔐 Security Notes
+
+- **App Password**: Never commit `.env` to git (already in `.gitignore`)
+- **SSO Cookies**: Stored locally in `sso.txt` — protect this file
+- **9Router Password**: Use strong password, rotate regularly
+- **Gmail Access**: App Password scope limited to IMAP only
+
+---
+
+## 📚 Related Resources
+
+- [Gmail IMAP Setup Guide](https://support.google.com/mail/answer/7126229)
+- [Google App Passwords](https://support.google.com/accounts/answer/185833)
+- [Playwright Documentation](https://playwright.dev/python/)
+- [Grok (x.ai) Official Site](https://x.ai/)
 
 ---
 
 <div align="center">
 
-**⚠️ Disclaimer: Untuk educational purposes only.**
+**⚠️ Disclaimer: For educational and automation purposes only. Use responsibly.**
+
+**Made with ❤️ by dzDev**
 
 </div>
