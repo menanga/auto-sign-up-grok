@@ -39,50 +39,78 @@ GMAIL_DOMAINS = _env_or('GMAIL_DOMAINS', 'example.com').split(',')
 ROUTER9 = _env_or('ROUTER9_URL', 'https://your-9router.example')
 ROUTER9_PASS = _env_or('ROUTER9_PASS', 'change-me')
 
-# Proxy list
+# ── Proxy Pool Manager ───────────────────────────────────────
+class ProxyPool:
+    """Proxy pool with failure tracking and blacklisting.
+
+    Proxies failing 3 times are blacklisted. When all proxies dead, returns None (fallback to direct).
+    """
+    def __init__(self, proxies: list):
+        self._proxies = {}  # proxy_url -> failure_count
+
+        for proxy in proxies:
+            proxy = proxy.strip()
+            if not proxy:
+                continue
+            # Extract IP:port from format like "129.222.204.27:10000 NG-N-S +"
+            match = re.match(r'^([\d\.]+:\d+)', proxy)
+            if match:
+                clean_proxy = match.group(1)
+                self._proxies[clean_proxy] = 0
+
+        log_ok(f"proxy pool: {len(self._proxies)} loaded")
+
+    def get_random_proxy(self):
+        """Get random working proxy, or None if all blacklisted."""
+        available = [p for p, fails in self._proxies.items() if fails < 3]
+
+        if not available:
+            log_no("all proxies blacklisted (3+ failures) - fallback to direct")
+            return None
+
+        proxy = random.choice(available)
+        log_wait(f"selected proxy: {proxy} (failures: {self._proxies[proxy]}/3)")
+        return proxy
+
+    def report_failure(self, proxy):
+        """Increment failure count. Blacklist at 3."""
+        if not proxy or proxy not in self._proxies:
+            return
+
+        self._proxies[proxy] += 1
+        log_no(f"proxy failed: {proxy} ({self._proxies[proxy]}/3 failures)")
+
+        if self._proxies[proxy] >= 3:
+            log_no(f"proxy BLACKLISTED: {proxy}")
+
+    def report_success(self, proxy):
+        """Report success (keeps failure history)."""
+        if not proxy or proxy not in self._proxies:
+            return
+
+        log_ok(f"proxy success: {proxy} (failures: {self._proxies[proxy]})")
+
+    def get_stats(self):
+        """Get pool stats."""
+        total = len(self._proxies)
+        blacklisted = sum(1 for fails in self._proxies.values() if fails >= 3)
+        available = total - blacklisted
+
+        return {
+            'total': total,
+            'available': available,
+            'blacklisted': blacklisted,
+        }
+
+# Load proxy pool
 PROXY_LIST_RAW = _env_or('PROXIES', '')
-PROXY_LIST = []
+PROXY_POOL = None
 if PROXY_LIST_RAW:
-    for line in PROXY_LIST_RAW.split(','):
-        line = line.strip()
-        if not line:
-            continue
-        # Extract IP:port from format like "129.222.204.27:10000 NG-N-S +"
-        match = re.match(r'^([\d\.]+:\d+)', line)
-        if match:
-            PROXY_LIST.append(match.group(1))
-
-def test_proxy(proxy):
-    """Test if proxy is working."""
-    try:
-        s = creq.Session()
-        r = s.get('https://api.ipify.org?format=json',
-                 proxies={'http': f'http://{proxy}', 'https': f'http://{proxy}'},
-                 timeout=5)
-        if r.status_code == 200:
-            ip = r.json().get('ip', 'unknown')
-            log_ok(f"proxy {proxy} → IP {ip}")
-            return True
-    except Exception as e:
-        log_no(f"proxy {proxy} failed: {e}")
-    return False
-
-def pick_working_proxy(max_attempts=5):
-    """Pick a working proxy from the list."""
-    if not PROXY_LIST:
-        return None
-
-    tested = set()
-    for _ in range(max_attempts):
-        proxy = random.choice(PROXY_LIST)
-        if proxy in tested:
-            continue
-        tested.add(proxy)
-        if test_proxy(proxy):
-            return proxy
-
-    log_no(f"no working proxy found after {max_attempts} attempts")
-    return None
+    proxy_lines = [line.strip() for line in PROXY_LIST_RAW.split(',') if line.strip()]
+    if proxy_lines:
+        PROXY_POOL = ProxyPool(proxy_lines)
+    else:
+        log_no("PROXIES env empty - running without proxy")
 
 # Auto-detect Chrome binary
 def _detect_chrome():
@@ -314,17 +342,15 @@ def add_to_router_single(acc):
         log_no(f"9router API error: {e}")
         return False
 
-    # Pick working proxy with validation
+    # Pick proxy from pool
     proxy_config = None
     proxy_server = None
-    if PROXY_LIST:
-        log_wait("testing proxy connection...")
-        proxy_server = pick_working_proxy(max_attempts=5)
+    if PROXY_POOL:
+        proxy_server = PROXY_POOL.get_random_proxy()
         if proxy_server:
             proxy_config = {'server': f'http://{proxy_server}'}
-            log_ok(f"using proxy: {proxy_server}")
         else:
-            log_no("all proxies failed, proceeding without proxy")
+            log_wait("no available proxy - using direct connection")
 
     # Generate random user agent
     user_agents = [
@@ -335,31 +361,32 @@ def add_to_router_single(acc):
     ]
     user_agent = random.choice(user_agents)
 
-    with sync_playwright() as p:
-        launch_kwargs = {
-            'user_data_dir': f'/tmp/grok-router-{int(time.time()*1000)}-{random.randint(1000,9999)}',
-            'headless': False,
-            'no_viewport': True,
-            'executable_path': CHROME_BIN,
-            'user_agent': user_agent,
-            'args': [
-                '--no-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-blink-features=AutomationControlled',
-                '--use-fake-ui-for-media-stream',
-                '--use-fake-device-for-media-stream',
-                f'--user-agent={user_agent}',
-            ],
-            'ignore_default_args': ['--enable-automation'],
-        }
-        if proxy_config:
-            launch_kwargs['proxy'] = proxy_config
+    try:
+        with sync_playwright() as p:
+            launch_kwargs = {
+                'user_data_dir': f'/tmp/grok-router-{int(time.time()*1000)}-{random.randint(1000,9999)}',
+                'headless': False,
+                'no_viewport': True,
+                'executable_path': CHROME_BIN,
+                'user_agent': user_agent,
+                'args': [
+                    '--no-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-blink-features=AutomationControlled',
+                    '--use-fake-ui-for-media-stream',
+                    '--use-fake-device-for-media-stream',
+                    f'--user-agent={user_agent}',
+                ],
+                'ignore_default_args': ['--enable-automation'],
+            }
+            if proxy_config:
+                launch_kwargs['proxy'] = proxy_config
 
-        log_wait(f"launching browser (proxy: {proxy_server or 'none'})")
-        ctx = p.chromium.launch_persistent_context(**launch_kwargs)
-        try:
-            ctx.clear_cookies()
-            cookies = acc.get('sso_cookies', [])
+            log_wait(f"launching browser (proxy: {proxy_server or 'none'})")
+            ctx = p.chromium.launch_persistent_context(**launch_kwargs)
+            try:
+                ctx.clear_cookies()
+                cookies = acc.get('sso_cookies', [])
             if cookies:
                 safe = []
                 for c in cookies:
@@ -401,14 +428,39 @@ def add_to_router_single(acc):
             for _ in range(60):
                 res = r9.poll(d['device_code'], d['code_verifier'])
                 if res.get('success'):
-                    log_ok(f"{email} added ✓"); ctx.close(); return True
+                    log_ok(f"{email} added ✓")
+                    ctx.close()
+                    # Report proxy success
+                    if PROXY_POOL and proxy_server:
+                        PROXY_POOL.report_success(proxy_server)
+                    return True
                 if not res.get('pending'):
-                    log_no(f"{email} poll error"); ctx.close(); return False
+                    log_no(f"{email} poll error")
+                    ctx.close()
+                    # Report proxy failure
+                    if PROXY_POOL and proxy_server:
+                        PROXY_POOL.report_failure(proxy_server)
+                    return False
                 time.sleep(5)
 
-            log_no(f"{email} poll timeout"); ctx.close(); return False
+            log_no(f"{email} poll timeout")
+            ctx.close()
+            # Report proxy failure on timeout
+            if PROXY_POOL and proxy_server:
+                PROXY_POOL.report_failure(proxy_server)
+            return False
         except Exception as e:
-            log_no(f"{email} error: {e}"); ctx.close(); return False
+            log_no(f"{email} error: {e}")
+            ctx.close()
+            # Report proxy failure on exception
+            if PROXY_POOL and proxy_server:
+                PROXY_POOL.report_failure(proxy_server)
+            return False
+    except Exception as outer_e:
+        # Report proxy failure on outer exception
+        if PROXY_POOL and proxy_server:
+            PROXY_POOL.report_failure(proxy_server)
+        return False
 
 # ── Main signup flow ──────────────────────────────────────────
 def signup_one(email_code_pair=None):
@@ -437,17 +489,15 @@ def signup_one(email_code_pair=None):
 
     ext_path = unlock_turnstile()
 
-    # Pick working proxy with validation
+    # Pick proxy from pool
     proxy_config = None
     proxy_server = None
-    if PROXY_LIST:
-        log_wait("testing proxy connection...")
-        proxy_server = pick_working_proxy(max_attempts=5)
+    if PROXY_POOL:
+        proxy_server = PROXY_POOL.get_random_proxy()
         if proxy_server:
             proxy_config = {'server': f'http://{proxy_server}'}
-            log_ok(f"using proxy: {proxy_server}")
         else:
-            log_no("all proxies failed, proceeding without proxy")
+            log_wait("no available proxy - using direct connection")
 
     # Generate random user agent
     user_agents = [
@@ -459,7 +509,9 @@ def signup_one(email_code_pair=None):
     user_agent = random.choice(user_agents)
     log_ok(f"user agent: {user_agent[:50]}...")
 
-    with sync_playwright() as p:
+    signup_success = False
+    try:
+        with sync_playwright() as p:
         launch_args = {
             'user_data_dir': f'/tmp/grok-pw-{int(time.time()*1000)}-{random.randint(1000,9999)}',
             'headless': False,
@@ -775,7 +827,18 @@ def signup_one(email_code_pair=None):
 
         mail.logout()
         ctx.close()
+
+        # Report proxy success
+        if PROXY_POOL and proxy_server:
+            PROXY_POOL.report_success(proxy_server)
+
         return data
+
+    except Exception as e:
+        # Report proxy failure
+        if PROXY_POOL and proxy_server:
+            PROXY_POOL.report_failure(proxy_server)
+        raise
 
 # ── Infinite runner ───────────────────────────────────────────
 def run_accounts():
@@ -793,7 +856,14 @@ def run_accounts():
     print(f"{CYN}║{RST} Batch Size: {BATCH_SIZE}")
     print(f"{CYN}║{RST} Chrome: {CHROME_BIN or 'bundled'}")
     print(f"{CYN}║{RST} Auto-Import: {'YES' if auto_add else 'NO'}")
-    print(f"{CYN}║{RST} Proxies: {len(PROXY_LIST)} loaded")
+
+    # Proxy pool stats
+    if PROXY_POOL:
+        stats = PROXY_POOL.get_stats()
+        print(f"{CYN}║{RST} Proxy Pool: {stats['total']} total, {stats['available']} available")
+    else:
+        print(f"{YEL}║{RST} Proxy Pool: disabled (PROXIES env not set)")
+
     print(f"{CYN}║{RST} Extension: {TS_DIR}")
     print(f"{CYN}║{RST} Account Retries: {MAX_ACCOUNT_RETRIES}")
     print(f"{CYN}║{RST} Delay Between Accounts: {DELAY_SECONDS}s")
@@ -804,25 +874,6 @@ def run_accounts():
         print(f"{GRN}║{RST} ✓ turnstilePatch extension found")
     else:
         print(f"{RED}║{RST} ✗ turnstilePatch extension MISSING")
-
-    # Diagnostic: test one proxy if available
-    if PROXY_LIST:
-        print(f"{CYN}║{RST} Testing random proxy...")
-        test_proxy = random.choice(PROXY_LIST)
-        try:
-            s = creq.Session()
-            r = s.get('https://api.ipify.org?format=json',
-                     proxies={'http': f'http://{test_proxy}', 'https': f'http://{test_proxy}'},
-                     timeout=5)
-            if r.status_code == 200:
-                ip = r.json().get('ip', 'unknown')
-                print(f"{GRN}║{RST} ✓ Proxy test OK: {test_proxy} → {ip}")
-            else:
-                print(f"{YEL}║{RST} ⚠ Proxy returned status {r.status_code}")
-        except Exception as e:
-            print(f"{RED}║{RST} ✗ Proxy test failed: {e}")
-    else:
-        print(f"{YEL}║{RST} ⚠ No proxies configured (PROXIES env var empty)")
 
     print(f"{CYN}{'='*74}{RST}\n")
 
@@ -876,6 +927,14 @@ def run_accounts():
         print(f"  ├─ Imported: {batch_imported}/{batch_target}")
         print(f"  ├─ Failed: {batch_target - batch_imported}")
         print(f"  └─ Total Imported (all batches): {GRN}{total_imported}{RST}")
+
+        # Proxy pool stats
+        if PROXY_POOL:
+            stats = PROXY_POOL.get_stats()
+            print(f"\n{CYN}■{RST} Proxy Pool Stats:")
+            print(f"  ├─ Available: {GRN}{stats['available']}{RST}/{stats['total']}")
+            print(f"  └─ Blacklisted: {RED}{stats['blacklisted']}{RST}")
+
         print(f"\n{CYN}■{RST} Overall Stats:")
         print(f"  ├─ Total Attempts: {total}")
         print(f"  ├─ Successful: {GRN}{ok_n}{RST}")
