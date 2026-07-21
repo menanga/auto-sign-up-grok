@@ -548,6 +548,18 @@ def signup_one(email_code_pair=None):
             page = ctx.new_page()
             page.goto(signup_url, wait_until='domcontentloaded', timeout=60000)
             time.sleep(4)
+
+            # Diagnostic: log actual URL and title after load
+            actual_url = page.url
+            page_title = page.title()
+            log_wait(f"loaded: {actual_url}")
+            log_wait(f"title: {page_title}")
+
+            # Check for error pages
+            page_text = page.evaluate("document.body.innerText || ''")[:200]
+            if any(err in page_text.lower() for err in ['access denied', 'blocked', 'captcha', 'rate limit', '403', '429']):
+                log_no(f"possible block: {page_text[:100]}")
+
             log_ok("page loaded")
 
             # Cookie banner
@@ -620,6 +632,13 @@ def signup_one(email_code_pair=None):
                 # Wait for turnstile token
                 log_wait(f"solving turnstile (attempt {ts_attempt}/3)...")
 
+                # Diagnostic: check page state
+                try:
+                    page_html = page.content()[:500]
+                    log_wait(f"  page HTML snippet: {page_html[:150]}...")
+                except:
+                    pass
+
                 # Diagnostic: check if extension loaded
                 try:
                     ext_count = page.evaluate("chrome.runtime ? 1 : 0")
@@ -631,8 +650,13 @@ def signup_one(email_code_pair=None):
                 try:
                     iframe_count = page.evaluate("document.querySelectorAll('iframe[src*=\"turnstile\"]').length")
                     log_wait(f"  turnstile iframes found: {iframe_count}")
-                except:
-                    pass
+
+                    # Log all iframes for debugging
+                    all_iframes = page.evaluate("Array.from(document.querySelectorAll('iframe')).map(f => f.src)")
+                    if all_iframes:
+                        log_wait(f"  all iframes: {all_iframes}")
+                except Exception as e:
+                    log_no(f"  iframe check error: {e}")
 
                 token = ''
                 for i in range(10):
