@@ -39,6 +39,9 @@ GMAIL_DOMAINS = _env_or('GMAIL_DOMAINS', 'example.com').split(',')
 ROUTER9 = _env_or('ROUTER9_URL', 'https://your-9router.example')
 ROUTER9_PASS = _env_or('ROUTER9_PASS', 'change-me')
 
+# Proxy config
+PROXY_MAX_FAILURES = max(1, int(_env_or('PROXY_MAX_FAILURES', '3')))  # Proxy blacklist threshold
+
 # ── Proxy Pool Manager ───────────────────────────────────────
 class ProxyPool:
     """Proxy pool with failure tracking and blacklisting.
@@ -134,7 +137,6 @@ BATCH_SIZE = max(1, int(_env_or('BATCH_SIZE', '1')))
 PAUSE_SECONDS = int(_env_or('PAUSE_SECONDS', '10'))
 DELAY_SECONDS = int(_env_or('DELAY_SECONDS', '5'))
 MAX_ACCOUNT_RETRIES = max(1, int(_env_or('MAX_ACCOUNT_RETRIES', '3')))
-PROXY_MAX_FAILURES = max(1, int(_env_or('PROXY_MAX_FAILURES', '3')))  # Proxy blacklist threshold
 AUTO_ADD = os.environ.get('AUTO_ADD', 'false').lower() in ('1','true','yes')
 
 _used_addrs = set()
