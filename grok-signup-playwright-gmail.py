@@ -173,6 +173,27 @@ def unlock_turnstile():
         raise RuntimeError(f"missing turnstilePatch/script.js or manifest.json in {TS_DIR}")
     return str(TS_DIR)
 
+def is_turnstile_present(page) -> bool:
+    """Check if Turnstile CAPTCHA is present on page."""
+    return page.evaluate('''(() => {
+        // Check for Turnstile input fields
+        if (document.querySelector('input[name="cf_challenge_response"]')) return true;
+        if (document.querySelector('input[name="cf-turnstile-response"]')) return true;
+
+        // Check for Cloudflare challenge iframes
+        const iframes = document.querySelectorAll("iframe");
+        for (const f of iframes) {
+            if (f.src && f.src.includes("challenges.cloudflare.com")) return true;
+        }
+
+        // Check body text for challenge prompts
+        const body = document.body.innerText || "";
+        if (body.includes("Verify you are human")) return true;
+        if (body.includes("Let us know you are human")) return true;
+
+        return false;
+    })()''')
+
 # ── Gmail IMAP ────────────────────────────────────────────────
 class GmailIMAP:
     def __init__(self):
@@ -629,6 +650,30 @@ def signup_one(email_code_pair=None):
             # Turnstile retry loop (max 3 attempts in same browser session)
             turnstile_success = False
             for ts_attempt in range(1, 4):
+                # Check if Turnstile actually present
+                log_wait(f"checking turnstile presence (attempt {ts_attempt}/3)...")
+                ts_present = False
+                try:
+                    ts_present = is_turnstile_present(page)
+                    if ts_present:
+                        log_ok("turnstile detected on page")
+                    else:
+                        log_no("turnstile NOT detected - checking why...")
+                        # Diagnostic: what's on page instead?
+                        page_text = page.evaluate("document.body.innerText || ''")[:300]
+                        log_wait(f"  page text: {page_text}")
+                        log_wait(f"  URL: {page.url}")
+                except Exception as e:
+                    log_no(f"turnstile detection error: {e}")
+
+                if not ts_present:
+                    log_no(f"turnstile missing (attempt {ts_attempt}/3) - possible causes:")
+                    log_wait("  - Proxy IP blocked by Cloudflare")
+                    log_wait("  - Page redirected to error")
+                    log_wait("  - Turnstile not loaded yet")
+                    time.sleep(3)  # Wait before retry
+                    continue
+
                 # Wait for turnstile token
                 log_wait(f"solving turnstile (attempt {ts_attempt}/3)...")
 
