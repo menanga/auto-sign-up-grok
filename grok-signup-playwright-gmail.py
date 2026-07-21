@@ -403,59 +403,59 @@ def add_to_router_single(acc):
                 d = r9.device_code()
                 verify_url = d['verification_uri_complete']
 
-            page = ctx.new_page()
-            page.goto(verify_url, wait_until='domcontentloaded', timeout=45000)
-            time.sleep(3)
-
-            has_login = page.evaluate("!!document.querySelector('input[type=email], input[type=password]')")
-            if has_login:
-                log_no(f"{email} SSO expired"); page.close(); ctx.close(); return False
-
-            try:
-                page.get_by_role('button', name=re.compile(r'Continue', re.I)).click(timeout=5000)
+                page = ctx.new_page()
+                page.goto(verify_url, wait_until='domcontentloaded', timeout=45000)
                 time.sleep(3)
-            except:
-                pass
 
-            try:
-                page.get_by_role('button', name=re.compile(r'Allow', re.I)).click(timeout=8000)
-                time.sleep(2)
-            except:
-                log_no(f"{email} Allow button not found"); page.close(); ctx.close(); return False
+                has_login = page.evaluate("!!document.querySelector('input[type=email], input[type=password]')")
+                if has_login:
+                    log_no(f"{email} SSO expired"); page.close(); ctx.close(); return False
 
-            time.sleep(3); page.close()
+                try:
+                    page.get_by_role('button', name=re.compile(r'Continue', re.I)).click(timeout=5000)
+                    time.sleep(3)
+                except:
+                    pass
 
-            for _ in range(60):
-                res = r9.poll(d['device_code'], d['code_verifier'])
-                if res.get('success'):
-                    log_ok(f"{email} added ✓")
-                    ctx.close()
-                    # Report proxy success
-                    if PROXY_POOL and proxy_server:
-                        PROXY_POOL.report_success(proxy_server)
-                    return True
-                if not res.get('pending'):
-                    log_no(f"{email} poll error")
-                    ctx.close()
-                    # Report proxy failure
-                    if PROXY_POOL and proxy_server:
-                        PROXY_POOL.report_failure(proxy_server)
-                    return False
-                time.sleep(5)
+                try:
+                    page.get_by_role('button', name=re.compile(r'Allow', re.I)).click(timeout=8000)
+                    time.sleep(2)
+                except:
+                    log_no(f"{email} Allow button not found"); page.close(); ctx.close(); return False
 
-            log_no(f"{email} poll timeout")
-            ctx.close()
-            # Report proxy failure on timeout
-            if PROXY_POOL and proxy_server:
-                PROXY_POOL.report_failure(proxy_server)
-            return False
-        except Exception as e:
-            log_no(f"{email} error: {e}")
-            ctx.close()
-            # Report proxy failure on exception
-            if PROXY_POOL and proxy_server:
-                PROXY_POOL.report_failure(proxy_server)
-            return False
+                time.sleep(3); page.close()
+
+                for _ in range(60):
+                    res = r9.poll(d['device_code'], d['code_verifier'])
+                    if res.get('success'):
+                        log_ok(f"{email} added ✓")
+                        ctx.close()
+                        # Report proxy success
+                        if PROXY_POOL and proxy_server:
+                            PROXY_POOL.report_success(proxy_server)
+                        return True
+                    if not res.get('pending'):
+                        log_no(f"{email} poll error")
+                        ctx.close()
+                        # Report proxy failure
+                        if PROXY_POOL and proxy_server:
+                            PROXY_POOL.report_failure(proxy_server)
+                        return False
+                    time.sleep(5)
+
+                log_no(f"{email} poll timeout")
+                ctx.close()
+                # Report proxy failure on timeout
+                if PROXY_POOL and proxy_server:
+                    PROXY_POOL.report_failure(proxy_server)
+                return False
+            except Exception as e:
+                log_no(f"{email} error: {e}")
+                ctx.close()
+                # Report proxy failure on exception
+                if PROXY_POOL and proxy_server:
+                    PROXY_POOL.report_failure(proxy_server)
+                return False
     except Exception as outer_e:
         # Report proxy failure on outer exception
         if PROXY_POOL and proxy_server:
@@ -512,31 +512,31 @@ def signup_one(email_code_pair=None):
     signup_success = False
     try:
         with sync_playwright() as p:
-        launch_args = {
-            'user_data_dir': f'/tmp/grok-pw-{int(time.time()*1000)}-{random.randint(1000,9999)}',
-            'headless': False,
-            'no_viewport': True,
-            'user_agent': user_agent,
-            'args': [
-                f'--disable-extensions-except={ext_path}',
-                f'--load-extension={ext_path}',
-                '--no-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-blink-features=AutomationControlled',
-                '--use-fake-ui-for-media-stream',
-                '--use-fake-device-for-media-stream',
-                '--disable-webgl',
-                '--disable-webgl2',
-                f'--user-agent={user_agent}',
-            ],
-            'ignore_default_args': ['--enable-automation'],
-        }
-        if CHROME_BIN:
-            launch_args['executable_path'] = CHROME_BIN
-        if proxy_config:
-            launch_args['proxy'] = proxy_config
+            launch_args = {
+                'user_data_dir': f'/tmp/grok-pw-{int(time.time()*1000)}-{random.randint(1000,9999)}',
+                'headless': False,
+                'no_viewport': True,
+                'user_agent': user_agent,
+                'args': [
+                    f'--disable-extensions-except={ext_path}',
+                    f'--load-extension={ext_path}',
+                    '--no-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-blink-features=AutomationControlled',
+                    '--use-fake-ui-for-media-stream',
+                    '--use-fake-device-for-media-stream',
+                    '--disable-webgl',
+                    '--disable-webgl2',
+                    f'--user-agent={user_agent}',
+                ],
+                'ignore_default_args': ['--enable-automation'],
+            }
+            if CHROME_BIN:
+                launch_args['executable_path'] = CHROME_BIN
+            if proxy_config:
+                launch_args['proxy'] = proxy_config
 
-        log_wait("launching browser...")
+            log_wait("launching browser...")
         log_wait(f"  Chrome: {CHROME_BIN or 'bundled'}")
         log_wait(f"  Extension: {ext_path}")
         log_wait(f"  Proxy: {proxy_server or 'none'}")
