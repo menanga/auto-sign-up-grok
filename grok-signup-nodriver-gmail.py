@@ -491,54 +491,39 @@ async def signup_one(email_code_pair=None):
             await asyncio.sleep(random.uniform(0.06, 0.12))
         log_ok("form filled")
 
-        # Hybrid Turnstile bypass: call solver every 3 clicks + poll button
-        log_wait("hybrid Turnstile bypass (solver + polling)...")
-        poll_start = time.time()
-        poll_timeout = 40  # 40s max
+        # Poll 'Complete sign up' button: 5 attempts, 3s interval, 15s total
+        log_wait("polling Complete sign up button (5 attempts, 3s interval)...")
         oauth_reached = False
-        click_count = 0
-        solver_called = False
+        max_attempts = 5
 
-        while time.time() - poll_start < poll_timeout:
+        for attempt in range(1, max_attempts + 1):
             try:
-                # Call solve_turnstile every 3 clicks (at 0, 3, 6...)
-                if click_count % 3 == 0 and not solver_called:
-                    log_wait(f"calling Turnstile solver (click #{click_count})...")
-                    token = await solve_turnstile(page, timeout=8)
-                    if token:
-                        log_ok(f"solver returned token: {token[:20]}...")
-                    else:
-                        log_wait("solver timeout, continuing polling...")
-                    solver_called = True
-                elif click_count % 3 != 0:
-                    solver_called = False  # Reset for next cycle
-
                 # Try find and click submit button
                 submit_btn = await page.find('Complete sign up', timeout=2)
                 if submit_btn:
                     await submit_btn.click()
-                    click_count += 1
-                    log_wait(f"clicked Complete sign up #{click_count} (elapsed: {int(time.time() - poll_start)}s)")
+                    log_wait(f"clicked Complete sign up (attempt {attempt}/{max_attempts})")
                     await asyncio.sleep(2)  # Wait for navigation
 
                     # Check if we reached OAuth page
                     current_url = await page.evaluate("window.location.href")
                     if 'oauth2/device?user_code=' in current_url:
                         oauth_reached = True
-                        log_ok(f"navigation succeeded after {click_count} clicks, {int(time.time() - poll_start)}s")
+                        log_ok(f"navigation succeeded (attempt {attempt}/{max_attempts})")
                         break
                 else:
-                    log_wait("Complete sign up button not found, retrying...")
-                    await asyncio.sleep(2)
+                    log_wait(f"Complete sign up button not found (attempt {attempt}/{max_attempts})")
             except Exception as e:
-                # Button click failed (likely Turnstile blocking), retry
-                log_wait(f"submit blocked: {e}, retrying... ({int(time.time() - poll_start)}s)")
-                await asyncio.sleep(2)
+                log_wait(f"submit blocked: {e} (attempt {attempt}/{max_attempts})")
+
+            # Wait 3s before next attempt (except last)
+            if attempt < max_attempts:
+                await asyncio.sleep(3)
 
         if not oauth_reached:
             mail.logout()
             browser.stop()
-            raise RuntimeError(f"Turnstile bypass failed after {click_count} clicks, {int(time.time() - poll_start)}s")
+            raise RuntimeError(f"Turnstile bypass failed after {max_attempts} attempts, 15s")
 
         # Wait for navigation to OAuth page after submit
         log_wait("waiting for redirect to OAuth page...")
