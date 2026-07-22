@@ -475,7 +475,7 @@ async def signup_one(email_code_pair=None):
                 log_ok("Turnstile detected, calling solver...")
 
                 # Call nodriver's Turnstile solver
-                token = await solve_turnstile(page, timeout=60)
+                token = await solve_turnstile(page, timeout=20)
 
                 if token and len(token) > 20:
                     log_ok(f"Turnstile solved (token: {token[:20]}...)")
@@ -486,12 +486,8 @@ async def signup_one(email_code_pair=None):
 
                 # Turnstile timeout - retry from email if not last attempt
                 if turnstile_attempt < 3:
-                    retry_delay = random.randint(10, 30)
-                    log_wait(f"waiting {retry_delay}s before retry...")
-                    await asyncio.sleep(retry_delay)
-
                     try:
-                        # Click Go back
+                        # Click Go back immediately (no delay)
                         back_btn = await page.find('Go back', timeout=5)
                         if back_btn:
                             await back_btn.click()
@@ -516,17 +512,6 @@ async def signup_one(email_code_pair=None):
                         # Wait for OTP input
                         await page.select('input[name=code]', timeout=20)
                         log_ok("email submitted")
-
-                        # Reconnect IMAP (connection timed out during retry wait)
-                        try:
-                            log_wait("reconnecting IMAP after retry wait...")
-                            # Force new connection (old one timed out, don't wait for close/logout)
-                            mail.mail = imaplib.IMAP4_SSL('imap.gmail.com')
-                            mail.mail.login(GMAIL_USER, GMAIL_APP_PASSWORD)
-                            mail.mail.select('inbox')
-                            log_ok("IMAP reconnected")
-                        except Exception as reconnect_err:
-                            log_no(f"IMAP reconnect failed: {reconnect_err}")
 
                         # Get new OTP (clear seen IDs first)
                         mail._seen_ids.clear()
