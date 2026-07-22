@@ -22,7 +22,7 @@ from email import message_from_bytes
 from pathlib import Path
 
 import nodriver as uc
-import curl_cffi.requests as creq
+import requests
 
 # Import Turnstile solver
 from turnstile_solver import solve_turnstile
@@ -293,7 +293,7 @@ def wait_for_otp(mail: GmailIMAP, timeout: int = 120):
 # ── 9Router helper ─────────────────────────────────────────────
 class Router9:
     def __init__(self):
-        self.s = creq.Session()
+        self.s = requests.Session()
         self.s.headers.update({'Accept':'application/json','Content-Type':'application/json'})
         self.auth_token = None
 
