@@ -313,9 +313,26 @@ class Router9:
         return r.json()
 
     def poll(self, device_code, code_verifier):
-        r = self.s.post(f'{ROUTER9}/api/oauth/grok-cli/poll',
-                        json={'deviceCode': device_code, 'codeVerifier': code_verifier}, timeout=60)
-        return r.json()
+        url = f'{ROUTER9}/api/oauth/grok-cli/poll'
+        payload = {'deviceCode': device_code, 'codeVerifier': code_verifier}
+
+        # Debug logging
+        print(f"→ Router9 poll request:")
+        print(f"  URL: {url}")
+        print(f"  deviceCode: {device_code[:30]}...")
+        print(f"  codeVerifier: {code_verifier[:30]}...")
+        print(f"  timeout: 60s")
+
+        try:
+            r = self.s.post(url, json=payload, timeout=60)
+            print(f"→ Router9 poll response:")
+            print(f"  status: {r.status_code}")
+            print(f"  headers: {dict(r.headers)}")
+            print(f"  body: {r.text[:500]}")
+            return r.json()
+        except Exception as e:
+            print(f"✗ Router9 poll network error: {type(e).__name__}: {e}")
+            raise
 
     def list_providers(self):
         r = self.s.get(f'{ROUTER9}/api/providers', timeout=15)
