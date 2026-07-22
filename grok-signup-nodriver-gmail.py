@@ -378,7 +378,16 @@ async def signup_one(email_code_pair=None):
         log_wait("launching nodriver browser...")
         log_wait(f"  Proxy: {proxy_server or 'none'}")
 
-        browser = await uc.start(headless=False)
+        # Match bulk-cf Chrome args for better Turnstile bypass in Docker
+        browser = await uc.start(
+            headless=False,
+            browser_args=[
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--disable-blink-features=AutomationControlled',
+            ]
+        )
         page = await browser.get(signup_url)
         await asyncio.sleep(4)
 
