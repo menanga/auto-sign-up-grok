@@ -26,6 +26,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xauth \
     fonts-liberation \
     fonts-noto-color-emoji \
+    libnss3 \
+    libxss1 \
+    libasound2 \
+    libgbm1 \
+    libgtk-3-0 \
+    libx11-xcb1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
     && rm -rf /var/lib/apt/lists/* /tmp/linux_signing_key.pub
 
 # Copy application files
