@@ -467,8 +467,8 @@ async def signup_one(email_code_pair=None):
 
         # Check if Turnstile present and wait for nodriver to solve (with retry)
         turnstile_solved = False
-        for turnstile_attempt in range(1, 3):  # Max 2 attempts
-            log_wait(f"checking for Turnstile... (attempt {turnstile_attempt}/2)")
+        for turnstile_attempt in range(1, 4):  # Max 3 attempts
+            log_wait(f"checking for Turnstile... (attempt {turnstile_attempt}/3)")
             ts_present = await is_turnstile_present(page)
 
             if ts_present:
@@ -482,10 +482,10 @@ async def signup_one(email_code_pair=None):
                     turnstile_solved = True
                     break
                 else:
-                    log_no(f"Turnstile solve failed (attempt {turnstile_attempt}/2)")
+                    log_no(f"Turnstile solve failed (attempt {turnstile_attempt}/3)")
 
-                # Turnstile timeout - retry from email if first attempt
-                if turnstile_attempt < 2:
+                # Turnstile timeout - retry from email if not last attempt
+                if turnstile_attempt < 3:
                     retry_delay = random.randint(10, 30)
                     log_wait(f"waiting {retry_delay}s before retry...")
                     await asyncio.sleep(retry_delay)
@@ -578,7 +578,7 @@ async def signup_one(email_code_pair=None):
         if not turnstile_solved:
             mail.logout()
             browser.stop()
-            raise RuntimeError("Turnstile failed after 2 attempts")
+            raise RuntimeError("Turnstile failed after 3 attempts")
 
         # Click submit
         submit_btn = await page.find('Complete sign up', timeout=8)
