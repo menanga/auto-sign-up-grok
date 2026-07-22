@@ -3,3 +3,4 @@ curl_cffi==0.15.0
 nodriver==0.39
 playwright==1.61.0
 python-dotenv==1.0.1
+requests==2.32.3
